@@ -1,0 +1,15 @@
+r0/request/
+.DS_Store
+*.pyc
+__pycache__/
+mac-client/.build/
+mac-client/.swiftpm/
+engine/.venv/
+engine/.venv.py*-bak-*/
+engine/assets/weights/
+engine/assets/indices/
+engine/TEMP/
+engine/logs/
+engine/opt/
+engine/.env
+dist/

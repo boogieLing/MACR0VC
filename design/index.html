@@ -1,0 +1,670 @@
+<html lang="en" vid="0"><head vid="1">
+    <meta charset="UTF-8" vid="2">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" vid="3">
+    <title vid="4">TE-DMX Field Controller - Ported Fix</title>
+    <script src="https://cdn.tailwindcss.com/3.4.17" vid="5"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js" vid="6"></script>
+    <style vid="7">
+        :root {
+            --aluminum-light: #e8e8e9;
+            --aluminum-dark: #d1d1d3;
+            --aluminum-border: #eeeeee;
+            --cap-blue: #1e3246;
+            --cap-ochre: #b59257;
+            --cap-grey: #858585;
+            --cap-orange: #e84a1b;
+            --cap-white: #f0f0f2;
+            --ink-dark: #333333;
+            --ink-subtle: #777777;
+            --screen-bg: #080808;
+            --font-tech: 'Courier New', Courier, monospace;
+            --font-ui: system-ui, -apple-system, sans-serif;
+            --led-green: #4af626;
+        }
+        * {
+            box-sizing: border-box;
+            user-select: none;
+            -webkit-user-drag: none;
+        }
+        body {
+            background-color: #f8f8f8;
+            height: 100vh;
+            width: 100vw;
+            margin: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-family: var(--font-ui);
+            overflow: hidden;
+        }
+        .device-case {
+            background: linear-gradient(to bottom, var(--aluminum-light), #e2e2e4);
+            width: 1000px;
+            height: 520px;
+            border-radius: 12px;
+            padding: 24px;
+            box-shadow: 
+                0 50px 100px -20px rgba(0,0,0,0.2),
+                inset 0 1px 0 rgba(255,255,255,0.8),
+                inset 0 -1px 0 rgba(0,0,0,0.1),
+                0 0 0 1px #ccc;
+            display: grid;
+            grid-template-columns: 260px 1fr;
+            gap: 2px;
+            position: relative;
+        }
+        .device-case::after {
+            content: '';
+            position: absolute;
+            left: 284px;
+            top: 24px;
+            bottom: 24px;
+            width: 1px;
+            background: rgba(0,0,0,0.1);
+            border-right: 1px solid rgba(255,255,255,0.5);
+        }
+        .section-left {
+            display: flex;
+            flex-direction: column;
+            gap: 24px;
+            padding-right: 24px;
+            z-index: 10;
+        }
+        
+        .screen-display {
+            background: var(--screen-bg);
+            height: 140px;
+            width: 100%;
+            border-radius: 2px;
+            position: relative;
+            overflow: hidden;
+            border: 4px solid #000;
+            box-shadow: inset 0 0 20px rgba(255,255,255,0.05);
+            display: flex;
+            flex-direction: column;
+        }
+        #canvas-container {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 0;
+            opacity: 0.9;
+        }
+        .screen-ui {
+            padding: 8px 12px;
+            color: white;
+            font-family: var(--font-tech);
+            font-size: 10px;
+            display: flex;
+            flex-direction: column;
+            height: 100%;
+            justify-content: space-between;
+            z-index: 1;
+            pointer-events: none;
+        }
+        .screen-header, .screen-footer {
+            display: flex;
+            justify-content: space-between;
+            opacity: 0.8;
+            background: rgba(0,0,0,0.3);
+        }
+        .grille {
+            display: grid;
+            grid-template-columns: repeat(12, 1fr);
+            gap: 3px;
+            width: 60px;
+        }
+        .dot {
+            width: 2px;
+            height: 2px;
+            background-color: #444;
+            border-radius: 50%;
+            box-shadow: inset 0 1px 1px rgba(0,0,0,0.5);
+        }
+        .btn-group-round {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 12px;
+        }
+        .btn-round {
+            width: 48px;
+            height: 48px;
+            border-radius: 50%;
+            background: var(--cap-white);
+            border: none;
+            box-shadow: 0 3px 0 #c2c2c4, 0 4px 4px rgba(0,0,0,0.15);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 14px;
+            color: var(--ink-dark);
+            cursor: pointer;
+            transition: transform 0.05s ease, box-shadow 0.05s ease;
+            position: relative;
+        }
+        .btn-round:active {
+            transform: translateY(3px);
+            box-shadow: 0 0 0 #c2c2c4, inset 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .btn-round::after {
+            content: '';
+            width: 80%;
+            height: 80%;
+            border-radius: 50%;
+            background: linear-gradient(135deg, rgba(0,0,0,0.02), rgba(255,255,255,0.2));
+            position: absolute;
+            pointer-events: none;
+        }
+        .section-right {
+            padding-left: 24px;
+            display: grid;
+            grid-template-rows: auto 1fr;
+            gap: 32px;
+        }
+        .encoder-row {
+            display: flex;
+            gap: 24px;
+            padding-bottom: 24px;
+            border-bottom: 1px solid rgba(0,0,0,0.05);
+            position: relative;
+        }
+        .encoder-row::after {
+            content: '';
+            position: absolute;
+            bottom: -2px;
+            left: 0;
+            right: 0;
+            height: 1px;
+            background: rgba(255,255,255,0.5);
+        }
+        .encoder-unit {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 12px;
+        }
+        .knob-socket {
+            width: 64px;
+            height: 64px;
+            border-radius: 50%;
+            background: #e0e0e2;
+            box-shadow: inset 0 2px 4px rgba(0,0,0,0.1), 0 1px 0 rgba(255,255,255,0.8);
+            position: relative;
+        }
+        .knob-cap {
+            width: 42px;
+            height: 42px;
+            border-radius: 50%;
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            box-shadow: 
+                0 4px 6px rgba(0,0,0,0.3),
+                0 8px 12px rgba(0,0,0,0.1),
+                inset 0 2px 3px rgba(255,255,255,0.3),
+                inset 0 -2px 4px rgba(0,0,0,0.2);
+            cursor: grab;
+            z-index: 10;
+            will-change: transform;
+        }
+        .knob-cap:active {
+            cursor: grabbing;
+        }
+        .knob-blue { background-color: var(--cap-blue); }
+        .knob-ochre { background-color: var(--cap-ochre); }
+        .knob-grey { background-color: var(--cap-grey); }
+        .knob-orange { background-color: var(--cap-orange); }
+        .knob-white { background-color: #eee; }
+        .knob-cap::after {
+            content: '';
+            position: absolute;
+            top: 15%; left: 15%; right: 15%; bottom: 15%;
+            border-radius: 50%;
+            background: linear-gradient(180deg, rgba(255,255,255,0.1), rgba(0,0,0,0.1));
+            pointer-events: none;
+        }
+        .label {
+            font-family: var(--font-tech);
+            font-size: 10px;
+            color: var(--ink-subtle);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            text-shadow: 0 1px 0 rgba(255,255,255,0.8);
+            pointer-events: none;
+        }
+        .fader-bank {
+            display: grid;
+            grid-template-columns: repeat(8, 1fr);
+            gap: 12px;
+            height: 100%;
+            align-items: end;
+        }
+        .channel-strip {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            height: 100%;
+            justify-content: flex-end;
+            gap: 12px;
+        }
+        .fader-track {
+            width: 16px;
+            height: 180px;
+            background: #d6d6d8;
+            border-radius: 8px;
+            box-shadow: inset 0 2px 6px rgba(0,0,0,0.15);
+            position: relative;
+            display: flex;
+            justify-content: center;
+        }
+        .fader-track::before {
+            content: '';
+            position: absolute;
+            top: 10px; bottom: 10px; width: 2px;
+            background: rgba(0,0,0,0.1);
+        }
+        .fader-cap {
+            width: 36px;
+            height: 54px;
+            background: var(--cap-white);
+            border-radius: 8px;
+            position: absolute;
+            bottom: 0;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.15), 0 2px 0 #c2c2c4;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: grab;
+            z-index: 5;
+            touch-action: none;
+        }
+        .fader-cap:active {
+            cursor: grabbing;
+        }
+        .fader-cap::after {
+            content: '';
+            width: 20px; height: 2px;
+            background: #ccc;
+            box-shadow: 0 2px 0 #fff;
+        }
+        
+        .btn-lozenge {
+            width: 36px;
+            height: 36px;
+            background: var(--cap-white);
+            border-radius: 50%;
+            border: none;
+            box-shadow: 0 2px 0 #c2c2c4;
+            cursor: pointer;
+            position: relative;
+            flex-shrink: 0; 
+            transition: background 0.1s;
+        }
+        
+        .btn-lozenge.black {
+            background: #1a1a1a;
+            box-shadow: 0 2px 0 #000;
+        }
+        .btn-lozenge.black::after {
+            content: '';
+            position: absolute;
+            top: 14px; left: 14px; width: 8px; height: 8px;
+            background: #333; 
+            border-radius: 50%;
+            transition: all 0.2s ease;
+            box-shadow: inset 0 1px 2px rgba(0,0,0,0.5);
+        }
+        
+        .btn-lozenge.black.active::after {
+            background-color: var(--led-green);
+            box-shadow: 0 0 8px var(--led-green), inset 0 -1px 2px rgba(255,255,255,0.4);
+        }
+        .btn-lozenge:active {
+            transform: translateY(2px);
+            box-shadow: none;
+        }
+        .branding {
+            position: absolute;
+            right: -40px;
+            top: 50%;
+            transform: rotate(90deg) translateY(-50%);
+            font-family: var(--font-ui);
+            color: #666;
+            font-size: 12px;
+            letter-spacing: 1px;
+            opacity: 0.5;
+        }
+    </style>
+</head>
+<body class="w-full h-full bg-gray-100" vid="8">
+    <div class="w-full h-full flex items-center justify-center" vid="9">
+        <div class="device-case" vid="10">
+            
+            <div class="section-left" vid="11">
+                <div class="grille" vid="12">
+                    <div class="dot" vid="13"></div><div class="dot" vid="14"></div><div class="dot" vid="15"></div><div class="dot" vid="16"></div><div class="dot" vid="17"></div><div class="dot" vid="18"></div><div class="dot" vid="19"></div><div class="dot" vid="20"></div><div class="dot" vid="21"></div><div class="dot" vid="22"></div><div class="dot" vid="23"></div><div class="dot" vid="24"></div>
+                    <div class="dot" vid="25"></div><div class="dot" vid="26"></div><div class="dot" vid="27"></div><div class="dot" vid="28"></div><div class="dot" vid="29"></div><div class="dot" vid="30"></div><div class="dot" vid="31"></div><div class="dot" vid="32"></div><div class="dot" vid="33"></div><div class="dot" vid="34"></div><div class="dot" vid="35"></div><div class="dot" vid="36"></div>
+                    <div class="dot" vid="37"></div><div class="dot" vid="38"></div><div class="dot" vid="39"></div><div class="dot" vid="40"></div><div class="dot" vid="41"></div><div class="dot" vid="42"></div><div class="dot" vid="43"></div><div class="dot" vid="44"></div><div class="dot" vid="45"></div><div class="dot" vid="46"></div><div class="dot" vid="47"></div><div class="dot" vid="48"></div>
+                </div>
+                <div style="display: flex; gap: 12px;" vid="49">
+                    <div class="btn-round" style="width:32px; height:32px;" vid="50">
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" vid="51"><circle cx="12" cy="12" r="10" vid="52"></circle></svg>
+                    </div>
+                    <div class="btn-round" style="width:32px; height:32px;" vid="53">
+                        <svg width="12" height="12" viewBox="0 0 24 24" stroke="currentColor" stroke-width="3" vid="54"><line x1="4" y1="12" x2="20" y2="12" vid="55"></line></svg>
+                    </div>
+                </div>
+                
+                <div class="screen-display" vid="56">
+                    <div id="canvas-container" vid="57"></div>
+                    <div class="screen-ui" vid="58">
+                        <div class="screen-header" vid="59">
+                            <span vid="60">DMX-FIELD</span>
+                            <span id="data-readout" vid="61">UNI:1 ACTIVE</span>
+                        </div>
+                        <div class="screen-footer" vid="62">
+                            <span vid="63">WAVE: SINE</span>
+                            <span vid="64">SYNC: INT</span>
+                        </div>
+                    </div>
+                </div>
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: auto;" vid="65">
+                    <button class="btn-round" style="width: 100%; border-radius: 6px;" vid="66">PAGE 1</button>
+                    <button class="btn-round" style="width: 100%; border-radius: 6px;" vid="67">PAGE 2</button>
+                </div>
+                
+                
+                <div class="btn-group-round" vid="68">
+                    <button class="btn-round" vid="69">M1</button>
+                    <button class="btn-round" vid="70">M2</button>
+                    <button class="btn-round" vid="71">rec</button>
+                    <button class="btn-round" style="color: var(--cap-orange)" vid="72">play</button>
+                    
+                    <button class="btn-round" vid="73"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" vid="74"><polygon points="5,3 19,12 5,21" vid="75"></polygon></svg></button>
+                    <button class="btn-round" vid="76"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" vid="77"><rect x="6" y="6" width="12" height="12" vid="78"></rect></svg></button>
+                    <button class="btn-round" vid="79">loop</button>
+                    <button class="btn-round" vid="80">shift</button>
+                </div>
+            </div>
+            
+            <div class="section-right" vid="81">
+                
+                
+                <div class="encoder-row" vid="82">
+                    <div class="encoder-unit" vid="83">
+                        <div class="knob-socket" id="socket-1" vid="84">
+                            <div class="knob-cap knob-blue joystick" data-id="1" vid="85"></div>
+                        </div>
+                        <span class="label" vid="86">Pan</span>
+                    </div>
+                    <div class="encoder-unit" vid="87">
+                        <div class="knob-socket" id="socket-2" vid="88">
+                            <div class="knob-cap knob-ochre joystick" data-id="2" vid="89"></div>
+                        </div>
+                        <span class="label" vid="90">Tilt</span>
+                    </div>
+                    <div class="encoder-unit" vid="91">
+                        <div class="knob-socket" id="socket-3" vid="92">
+                            <div class="knob-cap knob-grey joystick" data-id="3" vid="93"></div>
+                        </div>
+                        <span class="label" vid="94">Dimmer</span>
+                    </div>
+                    <div class="encoder-unit" vid="95">
+                        <div class="knob-socket" id="socket-4" vid="96">
+                            <div class="knob-cap knob-orange joystick" data-id="4" vid="97"></div>
+                        </div>
+                        <span class="label" vid="98">FX Rate</span>
+                    </div>
+                    <div class="encoder-unit" style="margin-left: auto;" vid="99">
+                        <div class="knob-socket" style="width: 48px; height: 48px;" id="socket-5" vid="100">
+                             <div class="knob-cap knob-white joystick" data-id="5" style="width: 32px; height: 32px;" vid="101"></div>
+                        </div>
+                        <span class="label" vid="102">Master</span>
+                    </div>
+                </div>
+                
+                <div class="fader-bank" vid="103">
+                    <div class="channel-strip" vid="104">
+                        <span class="label" vid="105">01</span>
+                        <div class="fader-track" id="track-1" vid="106">
+                            <div class="fader-cap" id="fader-1" style="bottom: 60%;" vid="107"></div>
+                        </div>
+                        <button class="btn-lozenge black toggle-btn" vid="108"></button>
+                    </div>
+                    <div class="channel-strip" vid="109">
+                        <span class="label" vid="110">02</span>
+                        <div class="fader-track" id="track-2" vid="111">
+                            <div class="fader-cap" id="fader-2" style="bottom: 45%;" vid="112"></div>
+                        </div>
+                        <button class="btn-lozenge black toggle-btn" vid="113"></button>
+                    </div>
+                    <div class="channel-strip" vid="114">
+                        <span class="label" vid="115">03</span>
+                        <div class="fader-track" id="track-3" vid="116">
+                            <div class="fader-cap" id="fader-3" style="bottom: 80%;" vid="117"></div>
+                        </div>
+                        <button class="btn-lozenge black toggle-btn" vid="118"></button>
+                    </div>
+                    <div class="channel-strip" vid="119">
+                        <span class="label" vid="120">04</span>
+                        <div class="fader-track" id="track-4" vid="121">
+                            <div class="fader-cap" id="fader-4" style="bottom: 10%;" vid="122"></div>
+                        </div>
+                        <button class="btn-lozenge black toggle-btn" vid="123"></button>
+                    </div>
+                    <div class="channel-strip" vid="124">
+                        <span class="label" vid="125">05</span>
+                        <div class="fader-track" id="track-5" vid="126">
+                            <div class="fader-cap" id="fader-5" style="bottom: 20%;" vid="127"></div>
+                        </div>
+                        <button class="btn-lozenge black toggle-btn" vid="128"></button>
+                    </div>
+                    <div class="channel-strip" vid="129">
+                        <span class="label" vid="130">06</span>
+                        <div class="fader-track" id="track-6" vid="131">
+                            <div class="fader-cap" id="fader-6" style="bottom: 0%;" vid="132"></div>
+                        </div>
+                        <button class="btn-lozenge black toggle-btn" vid="133"></button>
+                    </div>
+                    <div class="channel-strip" vid="134">
+                        <span class="label" vid="135">07</span>
+                        <div class="fader-track" id="track-7" vid="136">
+                            <div class="fader-cap" id="fader-7" style="bottom: 55%;" vid="137"></div>
+                        </div>
+                        <button class="btn-lozenge black toggle-btn" vid="138"></button>
+                    </div>
+                    <div class="channel-strip" vid="139">
+                        <span class="label" vid="140">08</span>
+                        <div class="fader-track" id="track-8" vid="141">
+                            <div class="fader-cap" id="fader-8" style="bottom: 90%;" vid="142"></div>
+                        </div>
+                        <button class="btn-lozenge black toggle-btn active" vid="143"></button>
+                    </div>
+                </div>
+            </div>
+
+        </div>
+    </div>
+    <script vid="144">
+        
+        let activeDrag = null;
+        let activeElement = null;
+        let startY = 0;
+        let startVal = 0;
+        const faders = document.querySelectorAll('.fader-cap');
+        faders.forEach(fader => {
+            fader.addEventListener('mousedown', (e) => {
+                activeDrag = 'fader';
+                activeElement = fader;
+                startY = e.clientY;
+                
+                startVal = parseFloat(window.getComputedStyle(fader).bottom);
+                e.preventDefault();
+            });
+        });
+        
+        window.addEventListener('mousemove', (e) => {
+            if (activeDrag === 'fader') {
+                const track = activeElement.parentElement;
+                const trackRect = track.getBoundingClientRect();
+                const capHeight = activeElement.offsetHeight;
+                const maxTravel = trackRect.height - capHeight;
+                
+                const deltaY = startY - e.clientY; 
+                let newBottom = startVal + deltaY;
+                
+                if (newBottom < 0) newBottom = 0;
+                if (newBottom > maxTravel) newBottom = maxTravel;
+                
+                activeElement.style.bottom = `${newBottom}px`;
+                
+                const ch = activeElement.id.split('-')[1];
+                const percent = newBottom / maxTravel;
+                document.getElementById('data-readout').innerText = `CH:${ch} VAL:${Math.floor(percent*255)}`;
+            }
+        });
+        
+        window.addEventListener('mouseup', () => {
+            activeDrag = null;
+            activeElement = null;
+        });
+        
+        const joysticks = document.querySelectorAll('.joystick');
+        
+        
+        const joyState = {
+            1: { x: 0, y: 0 }, 
+            2: { x: 0, y: 0 }, 
+            3: { x: 0, y: 0 }, 
+            4: { x: 0, y: 0 }, 
+            5: { x: 0, y: 0 }  
+        };
+        joysticks.forEach(stick => {
+            stick.addEventListener('mousedown', startDragJoystick);
+            stick.style.transform = `translate(-50%, -50%) translate(0px, 0px)`;
+        });
+        function startDragJoystick(e) {
+            e.preventDefault();
+            const stick = e.target;
+            const id = stick.dataset.id;
+            const socket = stick.parentElement;
+            
+            const socketRect = socket.getBoundingClientRect();
+            const centerX = socketRect.left + socketRect.width / 2;
+            const centerY = socketRect.top + socketRect.height / 2;
+            const maxDist = (socketRect.width / 2) - (stick.offsetWidth / 4); 
+            function onMouseMove(moveEvent) {
+                const dx = moveEvent.clientX - centerX;
+                const dy = moveEvent.clientY - centerY;
+                const distance = Math.sqrt(dx*dx + dy*dy);
+                
+                let finalX = dx;
+                let finalY = dy;
+                if (distance > maxDist) {
+                    const angle = Math.atan2(dy, dx);
+                    finalX = Math.cos(angle) * maxDist;
+                    finalY = Math.sin(angle) * maxDist;
+                }
+                stick.style.transform = `translate(-50%, -50%) translate(${finalX}px, ${finalY}px)`;
+                
+                
+                joyState[id].x = finalX / maxDist; 
+                joyState[id].y = finalY / maxDist;
+            }
+            function onMouseUp() {
+                document.removeEventListener('mousemove', onMouseMove);
+                document.removeEventListener('mouseup', onMouseUp);
+                
+                
+                stick.style.transition = 'transform 0.2s cubic-bezier(0.175, 0.885, 0.32, 1.275)';
+                stick.style.transform = `translate(-50%, -50%) translate(0px, 0px)`;
+                
+                
+                joyState[id] = { x: 0, y: 0 };
+                setTimeout(() => { stick.style.transition = 'none'; }, 200);
+            }
+            document.addEventListener('mousemove', onMouseMove);
+            document.addEventListener('mouseup', onMouseUp);
+        }
+        
+        const ledButtons = document.querySelectorAll('.toggle-btn');
+        ledButtons.forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                btn.classList.toggle('active');
+                e.stopPropagation(); 
+            });
+        });
+        
+        function initThree() {
+            const container = document.getElementById('canvas-container');
+            const width = container.clientWidth;
+            const height = container.clientHeight;
+            const scene = new THREE.Scene();
+            const camera = new THREE.PerspectiveCamera(40, width / height, 0.1, 1000);
+            camera.position.z = 5;
+            const renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true });
+            renderer.setSize(width, height);
+            container.appendChild(renderer.domElement);
+            
+            const lines = [];
+            const lineCount = 5;
+            const segments = 64;
+            for(let l=0; l<lineCount; l++) {
+                const geometry = new THREE.BufferGeometry();
+                const positions = new Float32Array(segments * 3);
+                geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+                
+                
+                const material = new THREE.LineBasicMaterial({ 
+                    color: l % 2 === 0 ? 0xe84a1b : 0xffffff,
+                    linewidth: 1,
+                    transparent: true,
+                    opacity: 0.8
+                });
+                
+                const line = new THREE.Line(geometry, material);
+                scene.add(line);
+                lines.push(line);
+            }
+            let time = 0;
+            function animate() {
+                requestAnimationFrame(animate);
+                
+                
+                const speed = 0.05 + (Math.abs(joyState[4].x) * 0.2); 
+                time += speed;
+                const freqBase = 1.5 + (joyState[1].x * 2); 
+                const ampBase = 0.5 + (joyState[2].y * -0.3); 
+                const separation = 0.2 + (joyState[3].y * 0.3); 
+                const noise = Math.abs(joyState[5].x) * 0.2; 
+                lines.forEach((line, lIndex) => {
+                    const positions = line.geometry.attributes.position.array;
+                    
+                    const yOffset = (lIndex - lineCount/2) * separation;
+                    for (let i = 0; i < segments; i++) {
+                        const x = (i / (segments - 1)) * 6 - 3;
+                        
+                        
+                        let y = Math.sin(x * freqBase + time + (lIndex*0.5)) * ampBase;
+                        
+                        
+                        y += Math.sin(x * 3 + time * 1.5) * 0.1;
+                        
+                        y += (Math.random() - 0.5) * noise;
+                        positions[i * 3] = x;
+                        positions[i * 3 + 1] = y + yOffset;
+                        positions[i * 3 + 2] = 0;
+                    }
+                    line.geometry.attributes.position.needsUpdate = true;
+                });
+                renderer.render(scene, camera);
+            }
+            animate();
+        }
+        window.onload = initThree;
+    </script>
+
+</body></html>
