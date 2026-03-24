@@ -1,31 +1,31 @@
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct RootView: View {
     @EnvironmentObject private var appState: AppState
+    @State private var parameterBank: ConsoleParameterBank = .single
+    @State private var isFAQPresented = false
+    @State private var faqMarkdown = ""
+    @State private var faqSourceLabel = "FAQ"
+    @State private var isAssetReportPresented = false
+    @State private var isUVRPresented = false
+    @State private var isONNXPresented = false
+    @State private var isCheckpointToolsPresented = false
 
     var body: some View {
         GeometryReader { proxy in
             let compactShell = proxy.size.width < 1180
-            let shortShell = proxy.size.height < 620
             let railWidth = compactShell
                 ? max(228, min(proxy.size.width * 0.24, 280))
                 : max(320, min(proxy.size.width * 0.26, 388))
 
-            Group {
-                if shortShell {
-                    ScrollView(.vertical, showsIndicators: false) {
-                        shellContent(proxy: proxy, railWidth: railWidth, contentHeight: max(proxy.size.height, 560))
-                    }
-                } else {
-                    shellContent(proxy: proxy, railWidth: railWidth, contentHeight: proxy.size.height)
-                }
-            }
-            .frame(width: proxy.size.width, height: proxy.size.height, alignment: .topLeading)
+            shellContent(proxy: proxy, railWidth: railWidth, contentHeight: proxy.size.height)
+                .frame(width: proxy.size.width, height: proxy.size.height, alignment: .topLeading)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(consoleShellBackground)
-        .ignoresSafeArea(.container, edges: [.leading, .trailing, .bottom])
+        .ignoresSafeArea(.container, edges: [.top, .leading, .trailing, .bottom])
         .overlay(alignment: .top) {
             Rectangle()
                 .fill(Color.white.opacity(0.55))
@@ -47,6 +47,61 @@ struct RootView: View {
                     }
             }
         }
+        .sheet(isPresented: $isFAQPresented) {
+            FAQDocumentSheet(
+                sourceLabel: faqSourceLabel,
+                markdown: faqMarkdown
+            )
+        }
+        .sheet(isPresented: $isAssetReportPresented) {
+            AssetReportSheet(viewModel: appState.assetAuditViewModel)
+        }
+        .sheet(isPresented: $isUVRPresented) {
+            UVRSheet(
+                viewModel: appState.uvrViewModel,
+                onChooseInputDirectory: chooseUVRInputDirectory,
+                onChooseInputFiles: chooseUVRInputFiles,
+                onChooseVocalOutputDirectory: chooseUVRVocalOutputDirectory,
+                onChooseInstrumentalOutputDirectory: chooseUVRInstrumentalOutputDirectory,
+                onRun: {
+                    Task { await appState.uvrViewModel.convert() }
+                }
+            )
+        }
+        .sheet(isPresented: $isONNXPresented) {
+            ONNXSheet(
+                viewModel: appState.onnxViewModel,
+                onChooseModelFile: chooseONNXModelFile,
+                onChooseExportFile: chooseONNXExportFile,
+                onRun: {
+                    Task { await appState.onnxViewModel.export() }
+                }
+            )
+        }
+        .sheet(isPresented: $isCheckpointToolsPresented) {
+            CheckpointToolsSheet(
+                viewModel: appState.checkpointToolsViewModel,
+                onRunComparison: {
+                    Task { await appState.checkpointToolsViewModel.compareModels() }
+                },
+                onChooseCheckpointFile: chooseCheckpointModelFile,
+                onLoadMetadata: {
+                    Task { await appState.checkpointToolsViewModel.loadMetadata() }
+                },
+                onModifyMetadata: {
+                    Task { await appState.checkpointToolsViewModel.modifyMetadata() }
+                },
+                onChooseMergeModelA: chooseMergeModelAFile,
+                onChooseMergeModelB: chooseMergeModelBFile,
+                onRunMerge: {
+                    Task { await appState.checkpointToolsViewModel.mergeModels() }
+                },
+                onChooseExtractModel: chooseExtractModelFile,
+                onRunExtract: {
+                    Task { await appState.checkpointToolsViewModel.extractSmallModel() }
+                }
+            )
+        }
         .animation(.spring(response: 0.28, dampingFraction: 0.9), value: appState.toast?.id)
         .onChange(of: appState.inferenceViewModel.transpose) {
             syncRealtimeControlsIfNeeded()
@@ -63,6 +118,26 @@ struct RootView: View {
         .onChange(of: appState.inferenceViewModel.selectedIndexPath) {
             syncRealtimeControlsIfNeeded()
         }
+        .onChange(of: appState.realtimeViewModel.sampleRateMode) {
+            syncRealtimeControlsIfNeeded()
+        }
+        .onChange(of: appState.realtimeViewModel.extraInferenceTime) {
+            syncRealtimeControlsIfNeeded()
+        }
+        .onChange(of: appState.realtimeViewModel.cpuProcesses) {
+            syncRealtimeControlsIfNeeded()
+        }
+        .onChange(of: appState.navigation) {
+            switch appState.navigation {
+            case .singleConvert:
+                parameterBank = .single
+            case .batchConvert:
+                parameterBank = .batch
+            case .models, .engine:
+                break
+            }
+        }
+        .background(WindowChromeConfigurator())
     }
 
     private func shellContent(proxy: GeometryProxy, railWidth: CGFloat, contentHeight: CGFloat) -> some View {
@@ -76,6 +151,8 @@ struct RootView: View {
                 models: appState.models,
                 indexPaths: appState.indexPaths,
                 selectedModelName: appState.selectedModelName,
+                selectedSpeakerCount: appState.selectedSpeakerCount,
+                parameterBank: parameterBank,
                 modelsCount: appState.models.count,
                 statusMessage: appState.statusMessage,
                 lastExecutionSummary: appState.lastExecutionSummary,
@@ -83,8 +160,11 @@ struct RootView: View {
                     Task { await appState.selectModel(model) }
                 },
                 onSelectIndexPath: { indexPath in
-                    appState.inferenceViewModel.selectedIndexPath = indexPath
-                    appState.batchViewModel.selectedIndexPath = indexPath
+                    let resolvedIndexPath = indexPath == "__auto_optional__" ? nil : indexPath
+                    appState.selectSharedIndexPath(resolvedIndexPath)
+                },
+                onSelectParameterBank: { bank in
+                    parameterBank = bank
                 },
                 onContextAction: handleContextAction
             )
@@ -101,6 +181,7 @@ struct RootView: View {
                 models: appState.models,
                 indexPaths: appState.indexPaths,
                 selectedModelName: appState.selectedModelName,
+                parameterBank: parameterBank,
                 statusMessage: appState.statusMessage,
                 lastExecutionSummary: appState.lastExecutionSummary,
                 catalogModelCount: appState.models.count,
@@ -110,6 +191,9 @@ struct RootView: View {
                 appMemoryLabel: appState.appMemoryLabel,
                 engineMemoryLabel: appState.engineMemoryLabel,
                 isNavigating: appState.isNavigating,
+                onSelectParameterBank: { bank in
+                    parameterBank = bank
+                },
                 onContextAction: handleContextAction
             )
             .frame(width: max(proxy.size.width - railWidth - 1, 0), height: contentHeight, alignment: .topLeading)
@@ -161,8 +245,28 @@ struct RootView: View {
             appState.openWeightsDirectory()
         case .openIndices:
             appState.openIndicesDirectory()
+        case .showUVR:
+            isUVRPresented = true
+        case .showONNX:
+            prepareONNXExportDefaults()
+            isONNXPresented = true
+        case .showCheckpointTools:
+            isCheckpointToolsPresented = true
+        case .showAssetReport:
+            isAssetReportPresented = true
+            Task { await appState.assetAuditViewModel.refreshReport() }
+        case .showFAQ:
+            showFAQSheet()
         case .chooseAudio:
             chooseAudioFile()
+        case .chooseCustomIndexFile:
+            chooseCustomIndexFile()
+        case .clearCustomIndexFile:
+            clearCustomIndexFile()
+        case .chooseF0CurveFile:
+            chooseF0CurveFile()
+        case .clearF0CurveFile:
+            clearF0CurveFile()
         case .convertSingle:
             Task { await appState.inferenceViewModel.convert(selectedModelName: appState.selectedModelName) }
         case .playPreview:
@@ -185,6 +289,8 @@ struct RootView: View {
             Task { await appState.startRealtime() }
         case .stopRealtime:
             Task { await appState.stopRealtime() }
+        case .unloadModel:
+            Task { await appState.unloadModel() }
         }
     }
 
@@ -231,6 +337,215 @@ struct RootView: View {
             appState.batchViewModel.outputDirectoryURL = panel.url
         }
     }
+
+    private func chooseUVRInputDirectory() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        if panel.runModal() == .OK {
+            appState.uvrViewModel.inputDirectoryURL = panel.url
+            appState.uvrViewModel.inputFileURLs = []
+        }
+    }
+
+    private func chooseUVRInputFiles() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.audio]
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.allowsMultipleSelection = true
+        if panel.runModal() == .OK {
+            appState.uvrViewModel.inputFileURLs = panel.urls
+            appState.uvrViewModel.inputDirectoryURL = nil
+        }
+    }
+
+    private func chooseUVRVocalOutputDirectory() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        if panel.runModal() == .OK {
+            appState.uvrViewModel.vocalOutputDirectoryURL = panel.url
+        }
+    }
+
+    private func chooseUVRInstrumentalOutputDirectory() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        if panel.runModal() == .OK {
+            appState.uvrViewModel.instrumentalOutputDirectoryURL = panel.url
+        }
+    }
+
+    private func prepareONNXExportDefaults() {
+        if appState.onnxViewModel.modelFileURL == nil, let selectedModelName = appState.selectedModelName {
+            let candidate = appState.environment.engineRoot
+                .appendingPathComponent("assets/weights", isDirectory: true)
+                .appendingPathComponent(selectedModelName)
+            if FileManager.default.fileExists(atPath: candidate.path) {
+                appState.onnxViewModel.modelFileURL = candidate
+            }
+        }
+
+        if appState.onnxViewModel.exportFileURL == nil, let modelURL = appState.onnxViewModel.modelFileURL {
+            let outputName = modelURL.deletingPathExtension().lastPathComponent + ".onnx"
+            appState.onnxViewModel.exportFileURL = appState.environment.defaultBatchOutputDirectory.appendingPathComponent(outputName)
+        }
+    }
+
+    private func chooseONNXModelFile() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [
+            UTType(filenameExtension: "pth"),
+            UTType(filenameExtension: "ckpt"),
+            .data
+        ].compactMap { $0 }
+        if panel.runModal() == .OK, let url = panel.url {
+            appState.onnxViewModel.modelFileURL = url
+            if appState.onnxViewModel.exportFileURL == nil {
+                appState.onnxViewModel.exportFileURL = appState.environment.defaultBatchOutputDirectory
+                    .appendingPathComponent(url.deletingPathExtension().lastPathComponent + ".onnx")
+            }
+        }
+    }
+
+    private func chooseONNXExportFile() {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [UTType(filenameExtension: "onnx") ?? .data]
+        panel.canCreateDirectories = true
+        panel.nameFieldStringValue = appState.onnxViewModel.exportFileURL?.lastPathComponent
+            ?? appState.onnxViewModel.modelFileURL.map { $0.deletingPathExtension().lastPathComponent + ".onnx" }
+            ?? "model.onnx"
+        if panel.runModal() == .OK, let url = panel.url {
+            appState.onnxViewModel.exportFileURL = url
+        }
+    }
+
+    private func chooseCheckpointModelFile() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [
+            UTType(filenameExtension: "pth"),
+            UTType(filenameExtension: "ckpt"),
+            .data
+        ].compactMap { $0 }
+        if panel.runModal() == .OK, let url = panel.url {
+            appState.checkpointToolsViewModel.selectedCheckpointFileURL = url
+            if appState.checkpointToolsViewModel.saveName.isEmpty {
+                appState.checkpointToolsViewModel.saveName = url.lastPathComponent
+            }
+        }
+    }
+
+    private func chooseMergeModelAFile() {
+        if let url = chooseCheckpointLikeFile() {
+            appState.checkpointToolsViewModel.mergeModelAURL = url
+            if appState.checkpointToolsViewModel.mergeSaveName.isEmpty {
+                appState.checkpointToolsViewModel.mergeSaveName = url.deletingPathExtension().lastPathComponent + "-merged"
+            }
+        }
+    }
+
+    private func chooseMergeModelBFile() {
+        if let url = chooseCheckpointLikeFile() {
+            appState.checkpointToolsViewModel.mergeModelBURL = url
+            if appState.checkpointToolsViewModel.mergeSaveName.isEmpty {
+                appState.checkpointToolsViewModel.mergeSaveName = url.deletingPathExtension().lastPathComponent + "-merged"
+            }
+        }
+    }
+
+    private func chooseExtractModelFile() {
+        if let url = chooseCheckpointLikeFile() {
+            appState.checkpointToolsViewModel.extractModelURL = url
+            if appState.checkpointToolsViewModel.extractSaveName.isEmpty {
+                appState.checkpointToolsViewModel.extractSaveName = url.deletingPathExtension().lastPathComponent + "-small"
+            }
+        }
+    }
+
+    private func chooseCheckpointLikeFile() -> URL? {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [
+            UTType(filenameExtension: "pth"),
+            UTType(filenameExtension: "ckpt"),
+            .data
+        ].compactMap { $0 }
+        return panel.runModal() == .OK ? panel.url : nil
+    }
+
+    private func chooseCustomIndexFile() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [
+            UTType(filenameExtension: "index"),
+            .plainText,
+            .commaSeparatedText,
+            .tabSeparatedText
+        ].compactMap { $0 }
+        if panel.runModal() == .OK, let url = panel.url {
+            appState.setSharedCustomIndexURL(url)
+        }
+    }
+
+    private func clearCustomIndexFile() {
+        appState.clearSharedCustomIndexURL()
+    }
+
+    private func chooseF0CurveFile() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [.plainText, .commaSeparatedText, .tabSeparatedText]
+        if panel.runModal() == .OK {
+            appState.inferenceViewModel.f0FileURL = panel.url
+        }
+    }
+
+    private func clearF0CurveFile() {
+        appState.inferenceViewModel.f0FileURL = nil
+    }
+
+    private func showFAQSheet() {
+        let prefersChinese = Locale.preferredLanguages.first?.lowercased().hasPrefix("zh") == true
+        let candidates: [(label: String, url: URL)] = prefersChinese
+            ? [
+                ("docs/cn/faq.md", appState.environment.engineRoot.appendingPathComponent("docs/cn/faq.md")),
+                ("docs/en/faq_en.md", appState.environment.engineRoot.appendingPathComponent("docs/en/faq_en.md"))
+            ]
+            : [
+                ("docs/en/faq_en.md", appState.environment.engineRoot.appendingPathComponent("docs/en/faq_en.md")),
+                ("docs/cn/faq.md", appState.environment.engineRoot.appendingPathComponent("docs/cn/faq.md"))
+            ]
+
+        for candidate in candidates where FileManager.default.fileExists(atPath: candidate.url.path) {
+            if let content = try? String(contentsOf: candidate.url, encoding: .utf8) {
+                faqSourceLabel = candidate.label
+                faqMarkdown = content
+                isFAQPresented = true
+                return
+            }
+        }
+
+        faqSourceLabel = "FAQ unavailable"
+        faqMarkdown = "Unable to load upstream FAQ markdown from `engine/docs`."
+        isFAQPresented = true
+    }
 }
 
 private enum ConsoleContextAction: String, Identifiable {
@@ -241,7 +556,16 @@ private enum ConsoleContextAction: String, Identifiable {
     case refreshRealtimeDevices
     case openWeights
     case openIndices
+    case showUVR
+    case showONNX
+    case showCheckpointTools
+    case showAssetReport
+    case showFAQ
     case chooseAudio
+    case chooseCustomIndexFile
+    case clearCustomIndexFile
+    case chooseF0CurveFile
+    case clearF0CurveFile
     case convertSingle
     case playPreview
     case revealOutput
@@ -252,8 +576,34 @@ private enum ConsoleContextAction: String, Identifiable {
     case openBatchOutput
     case startRealtime
     case stopRealtime
+    case unloadModel
 
     var id: String { rawValue }
+}
+
+private enum ConsoleParameterBank: String, CaseIterable, Identifiable {
+    case single
+    case batch
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .single:
+            return "Single"
+        case .batch:
+            return "Batch"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .single:
+            return "Edit single-convert faders"
+        case .batch:
+            return "Edit batch-convert faders"
+        }
+    }
 }
 
 private struct ConsoleActionItem: Identifiable {
@@ -301,40 +651,41 @@ private struct ConsoleLeftRail: View {
     let models: [ModelOption]
     let indexPaths: [String]
     let selectedModelName: String?
+    let selectedSpeakerCount: Int
+    let parameterBank: ConsoleParameterBank
     let modelsCount: Int
     let statusMessage: String
     let lastExecutionSummary: String
     let onSelectModel: (String) -> Void
     let onSelectIndexPath: (String) -> Void
+    let onSelectParameterBank: (ConsoleParameterBank) -> Void
     let onContextAction: (ConsoleContextAction) -> Void
 
     var body: some View {
         GeometryReader { proxy in
             let shortRail = proxy.size.height < 820
-            let tightRail = proxy.size.height < 760
             let ultraTightRail = proxy.size.height < 700
-            let controlButtonSize = max(
-                ultraTightRail ? 40 : (tightRail ? 44 : 50),
-                min(
-                    min(proxy.size.width * 0.185, ultraTightRail ? 54 : (shortRail ? 60 : 70)),
-                    proxy.size.height * (ultraTightRail ? 0.064 : (tightRail ? 0.072 : 0.084))
-                )
-            )
 
             VStack(alignment: .leading, spacing: 0) {
                 grille
                 miniTransport
-                    .padding(.top, ultraTightRail ? 10 : (shortRail ? 12 : 18))
+                    .padding(.top, ultraTightRail ? 8 : (shortRail ? 10 : 14))
                 assetRack
-                    .padding(.top, ultraTightRail ? 10 : (shortRail ? 16 : 22))
-                Spacer(minLength: ultraTightRail ? 6 : (shortRail ? 10 : 18))
-                actionPad(buttonSize: controlButtonSize, compact: shortRail, tight: ultraTightRail)
+                    .padding(.top, ultraTightRail ? 8 : (shortRail ? 12 : 16))
+                Spacer(minLength: ultraTightRail ? 8 : (shortRail ? 12 : 18))
+                realtimeLabRack(compact: shortRail, tight: ultraTightRail)
+                    .padding(.top, ultraTightRail ? 0 : (shortRail ? 2 : 4))
+                Spacer(minLength: ultraTightRail ? 4 : (shortRail ? 6 : 8))
+                Text(lastExecutionSummary)
+                    .font(.system(size: ultraTightRail ? 9 : (shortRail ? 10 : 11), weight: .medium, design: .monospaced))
+                    .foregroundStyle(AppTheme.labelInk)
+                    .lineLimit(ultraTightRail ? 1 : 2)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .padding(.top, ultraTightRail ? 20 : (shortRail ? 28 : 40))
-            .padding(.bottom, ultraTightRail ? 10 : (shortRail ? 18 : 28))
-            .padding(.leading, shortRail ? 22 : 30)
-            .padding(.trailing, shortRail ? 18 : 28)
+            .padding(.top, ultraTightRail ? 18 : (shortRail ? 22 : 30))
+            .padding(.bottom, ultraTightRail ? 8 : (shortRail ? 12 : 18))
+            .padding(.leading, shortRail ? 20 : 28)
+            .padding(.trailing, shortRail ? 16 : 24)
         }
     }
 
@@ -384,81 +735,227 @@ private struct ConsoleLeftRail: View {
                 )
 
                 ConsolePatchMenuCard(
-                    title: "INDEX FILE",
-                    value: inferenceViewModel.selectedIndexPath.map(lastPath) ?? "Auto match",
-                    detail: indexPaths.isEmpty ? "No index files" : "\(indexPaths.count) loaded",
-                    actionLabel: "PICK",
-                    accent: inferenceViewModel.selectedIndexPath == nil ? nil : AppTheme.knobOchre,
-                    options: indexPaths.map {
-                        ConsolePickerOption(id: $0, title: lastPath($0), subtitle: nil)
+                    title: "SPEAKER ID",
+                    value: "\(inferenceViewModel.speakerID)",
+                    detail: selectedSpeakerCount > 1 ? "0...\(max(selectedSpeakerCount - 1, 0)) for current model" : "Single-speaker model",
+                    actionLabel: "SET",
+                    accent: selectedSpeakerCount > 1 ? AppTheme.knobBlue : nil,
+                    options: Array(0...max(selectedSpeakerCount - 1, 0)).map { speakerID in
+                        ConsolePickerOption(id: "\(speakerID)", title: "Speaker \(speakerID)", subtitle: speakerID == 0 ? "Default voice slot" : nil)
                     },
-                    selectedID: inferenceViewModel.selectedIndexPath,
-                    emptyState: "Auto match",
+                    selectedID: "\(min(inferenceViewModel.speakerID, max(selectedSpeakerCount - 1, 0)))",
+                    emptyState: "Speaker 0",
                     compactHeight: true,
-                    onSelect: onSelectIndexPath
+                    onSelect: { speakerID in
+                        guard let parsedSpeakerID = Int(speakerID) else { return }
+                        inferenceViewModel.speakerID = parsedSpeakerID
+                        batchViewModel.speakerID = parsedSpeakerID
+                    }
                 )
 
-                ConsolePatchActionCard(
-                    title: "INPUT AUDIO",
-                    value: inferenceViewModel.inputFileURL?.lastPathComponent ?? "Choose source audio",
-                    detail: inferenceViewModel.inputFileURL == nil ? "Browse a local file" : "Ready for convert",
-                    actionLabel: "BROWSE",
-                    accent: inferenceViewModel.inputFileURL == nil ? nil : AppTheme.knobBlue
-                    ,
-                    compactHeight: true
-                ) {
-                    onContextAction(.chooseAudio)
-                }
-
-                ConsolePatchActionCard(
-                    title: "OUTPUT FOLDER",
-                    value: batchViewModel.outputDirectoryURL?.lastPathComponent ?? "Set output folder",
-                    detail: batchViewModel.outputDirectoryURL == nil ? "Optional for batch" : "Batch output ready",
+                ConsolePatchMenuCard(
+                    title: "F0 METHOD",
+                    value: inferenceViewModel.f0Method.rawValue.uppercased(),
+                    detail: "Single + batch pitch detection",
                     actionLabel: "SET",
-                    accent: batchViewModel.outputDirectoryURL == nil ? nil : AppTheme.knobGrey
-                    ,
-                    compactHeight: true
-                ) {
-                    onContextAction(.chooseBatchOutputFolder)
-                }
+                    accent: AppTheme.knobOrange,
+                    options: F0Method.allCases.map { method in
+                        ConsolePickerOption(id: method.rawValue, title: method.rawValue.uppercased(), subtitle: method == .rmvpe ? "Default GPU-safe" : nil)
+                    },
+                    selectedID: inferenceViewModel.f0Method.rawValue,
+                    emptyState: "No F0 methods available",
+                    compactHeight: true,
+                    onSelect: { methodID in
+                        guard let method = F0Method(rawValue: methodID) else { return }
+                        inferenceViewModel.f0Method = method
+                        batchViewModel.f0Method = method
+                        pushRealtimeConfigIfNeeded()
+                    }
+                )
             }
         }
         .padding(.top, 2)
     }
 
-    private func actionPad(buttonSize: CGFloat, compact: Bool, tight: Bool) -> some View {
-        VStack(alignment: .leading, spacing: tight ? 8 : (compact ? 10 : 16)) {
-            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: tight ? 6 : (compact ? 8 : 12)), count: 4), spacing: tight ? 6 : (compact ? 8 : 12)) {
-                ForEach(contextActions) { item in
-                    Button {
-                        onContextAction(item.action)
-                    } label: {
-                        if item.title.count <= 3 {
-                            VStack(spacing: tight ? 2 : (compact ? 3 : 4)) {
-                                Image(systemName: item.systemImage)
-                                    .font(.system(size: tight ? 10 : (compact ? 11 : 13), weight: .semibold))
-                                Text(item.title)
-                                    .font(.system(size: tight ? 8 : (compact ? 9 : 10), weight: .medium, design: .rounded))
-                            }
-                            .frame(width: buttonSize, height: buttonSize)
-                        } else {
-                            Text(item.title)
-                                .font(.system(size: tight ? 9 : (compact ? 10 : 12), weight: .medium, design: .rounded))
-                                .frame(width: buttonSize, height: buttonSize)
-                        }
-                    }
-                    .buttonStyle(ConsoleRoundButtonStyle(accent: item.accent))
-                    .disabled(!item.isEnabled)
-                    .opacity(item.isEnabled ? 1 : 0.48)
-                }
-            }
-
-            Text(lastExecutionSummary)
-                .font(.system(size: tight ? 9 : (compact ? 10 : 11), weight: .medium, design: .monospaced))
+    private func realtimeLabRack(compact: Bool, tight: Bool) -> some View {
+        VStack(alignment: .leading, spacing: tight ? 8 : 10) {
+            Text("REALTIME LAB")
+                .font(.system(size: 12, weight: .semibold, design: .monospaced))
                 .foregroundStyle(AppTheme.labelInk)
-                .lineLimit(tight ? 1 : 2)
+
+                ConsolePatchMenuCard(
+                    title: "SR MODE",
+                    value: realtimeViewModel.sampleRateMode == .model ? "MODEL" : "DEVICE",
+                    detail: "Realtime sample rate source",
+                    actionLabel: "SET",
+                    accent: AppTheme.knobBlue,
+                    options: SampleRateMode.allCases.map { mode in
+                        ConsolePickerOption(
+                            id: mode.rawValue,
+                            title: mode == .model ? "Model Sample Rate" : "Device Sample Rate",
+                            subtitle: mode == .model ? "Use the loaded model target sample rate" : "Use the current input device sample rate"
+                        )
+                    },
+                    selectedID: realtimeViewModel.sampleRateMode.rawValue,
+                    emptyState: "No sample rate modes available",
+                    compactHeight: true,
+                    onSelect: { modeID in
+                        guard let mode = SampleRateMode(rawValue: modeID) else { return }
+                        realtimeViewModel.sampleRateMode = mode
+                        pushRealtimeConfigIfNeeded()
+                    }
+                )
+
+                ConsoleCompactSliderRow(
+                    title: "EXTRA",
+                    valueText: "\(decimalString(realtimeViewModel.extraInferenceTime)) S",
+                    value: Binding(
+                        get: { realtimeViewModel.extraInferenceTime },
+                        set: { newValue in
+                            realtimeViewModel.extraInferenceTime = newValue
+                            pushRealtimeConfigIfNeeded()
+                        }
+                    ),
+                    range: 0...10,
+                    step: 0.5,
+                    accent: AppTheme.knobOrange,
+                    compact: true
+                )
+
+                ConsoleCompactSliderRow(
+                    title: "CPUS",
+                    valueText: "\(Int(realtimeViewModel.cpuProcesses)) PROCS",
+                    value: Binding(
+                        get: { Double(realtimeViewModel.cpuProcesses) },
+                        set: { newValue in
+                            realtimeViewModel.cpuProcesses = max(1, Int(newValue.rounded()))
+                            pushRealtimeConfigIfNeeded()
+                        }
+                    ),
+                    range: 1...Double(max(ProcessInfo.processInfo.processorCount, 1)),
+                    step: 1,
+                    accent: AppTheme.knobGrey,
+                    compact: true
+                )
+
+                ConsoleCompactSliderRow(
+                    title: "THR",
+                    valueText: "\(realtimeViewModel.threshold) DB",
+                    value: Binding(
+                        get: { Double(realtimeViewModel.threshold) },
+                        set: { newValue in
+                            realtimeViewModel.threshold = Int(newValue.rounded())
+                            pushRealtimeConfigIfNeeded()
+                        }
+                    ),
+                    range: -90...0,
+                    step: 1,
+                    accent: AppTheme.knobOrange,
+                    compact: true
+                )
+
+            ConsoleCompactSliderRow(
+                title: "FMT",
+                valueText: decimalString(realtimeViewModel.formant),
+                value: Binding(
+                    get: { realtimeViewModel.formant },
+                    set: { newValue in
+                        realtimeViewModel.formant = newValue
+                        pushRealtimeConfigIfNeeded()
+                    }
+                ),
+                range: -12...12,
+                step: 0.1,
+                accent: AppTheme.knobBlue,
+                compact: true
+            )
+
+            ConsoleCompactSliderRow(
+                title: "SMP",
+                valueText: decimalString(realtimeViewModel.sampleLength),
+                value: Binding(
+                    get: { realtimeViewModel.sampleLength },
+                    set: { newValue in
+                        realtimeViewModel.sampleLength = newValue
+                        pushRealtimeConfigIfNeeded()
+                    }
+                ),
+                range: 0.05...3.0,
+                step: 0.01,
+                accent: AppTheme.knobOchre,
+                compact: true
+            )
+
+            ConsoleCompactSliderRow(
+                title: "FAD",
+                valueText: decimalString(realtimeViewModel.fadeLength),
+                value: Binding(
+                    get: { realtimeViewModel.fadeLength },
+                    set: { newValue in
+                        realtimeViewModel.fadeLength = newValue
+                        pushRealtimeConfigIfNeeded()
+                    }
+                ),
+                range: 0...1.0,
+                step: 0.01,
+                accent: AppTheme.knobGrey,
+                compact: true
+            )
+
+            HStack(spacing: 10) {
+                ConsoleCompactToggleRow(
+                    title: "IN NR",
+                    isOn: Binding(
+                        get: { realtimeViewModel.inputNoiseReduction },
+                        set: { newValue in
+                            realtimeViewModel.inputNoiseReduction = newValue
+                            pushRealtimeConfigIfNeeded()
+                        }
+                    ),
+                    accent: Color(hex: 0x0984E3),
+                    compact: true
+                )
+                ConsoleCompactToggleRow(
+                    title: "OUT NR",
+                    isOn: Binding(
+                        get: { realtimeViewModel.outputNoiseReduction },
+                        set: { newValue in
+                            realtimeViewModel.outputNoiseReduction = newValue
+                            pushRealtimeConfigIfNeeded()
+                        }
+                    ),
+                    accent: Color(hex: 0x0984E3),
+                    compact: true
+                )
+                ConsoleCompactToggleRow(
+                    title: "PV",
+                    isOn: Binding(
+                        get: { realtimeViewModel.usePhaseVocoder },
+                        set: { newValue in
+                            realtimeViewModel.usePhaseVocoder = newValue
+                            pushRealtimeConfigIfNeeded()
+                        }
+                    ),
+                    accent: Color(hex: 0x0984E3),
+                    compact: true
+                )
+            }
         }
-        .padding(.top, tight ? 2 : 6)
+    }
+
+    private func decimalString(_ value: Double) -> String {
+        value.formatted(.number.precision(.fractionLength(2)))
+    }
+
+    private func pushRealtimeConfigIfNeeded() {
+        guard realtimeViewModel.isRunning else { return }
+        Task {
+            await realtimeViewModel.configure(
+                selectedModelName: selectedModelName,
+                selectedIndexPath: inferenceViewModel.effectiveIndexPath,
+                inferenceViewModel: inferenceViewModel
+            )
+        }
     }
 
     private var contextActions: [ConsoleActionItem] {
@@ -497,6 +994,7 @@ private struct ConsoleDeck: View {
     let models: [ModelOption]
     let indexPaths: [String]
     let selectedModelName: String?
+    let parameterBank: ConsoleParameterBank
     let statusMessage: String
     let lastExecutionSummary: String
     let catalogModelCount: Int
@@ -506,41 +1004,41 @@ private struct ConsoleDeck: View {
     let appMemoryLabel: String
     let engineMemoryLabel: String
     let isNavigating: Bool
+    let onSelectParameterBank: (ConsoleParameterBank) -> Void
     let onContextAction: (ConsoleContextAction) -> Void
 
     var body: some View {
         GeometryReader { proxy in
             let compactDeck = proxy.size.width < 980
             let veryCompactDeck = proxy.size.width < 760
+            let compactTopBar = proxy.size.width < 780
             let shortDeck = proxy.size.height < 820
             let tightDeck = proxy.size.height < 760
             let contentHeight = max(proxy.size.height - (tightDeck ? 36 : 44), 420)
-            let monitorHeight = min(max(contentHeight * (tightDeck ? 0.10 : (shortDeck ? 0.15 : 0.18)), tightDeck ? 90 : 132), shortDeck ? 134 : 178)
-            let faderModuleHeight = min(max(contentHeight * (tightDeck ? 0.27 : (shortDeck ? 0.35 : 0.40)), tightDeck ? 150 : 224), shortDeck ? 250 : 324)
-            let trackHeight = min(max(faderModuleHeight - (tightDeck ? 42 : 92), tightDeck ? 92 : 148), shortDeck ? 170 : 224)
-            let routingWidth = veryCompactDeck ? 132.0 : (compactDeck ? 168.0 : 220.0)
+            let actionPadWidth = compactDeck ? 308.0 : 560.0
+            let monitorHeight = min(max(contentHeight * (tightDeck ? 0.10 : (shortDeck ? 0.16 : 0.20)), tightDeck ? 92 : 132), shortDeck ? 154 : 198)
+            let faderModuleHeight = min(max(contentHeight * (tightDeck ? 0.36 : (shortDeck ? 0.46 : 0.52)), tightDeck ? 214 : 288), shortDeck ? 336 : 428)
+            let trackHeight = min(max(faderModuleHeight - (tightDeck ? 56 : 98), tightDeck ? 110 : 148), shortDeck ? 188 : 232)
             let faderWidth = max(
                 veryCompactDeck ? 38 : (compactDeck ? 46 : 70),
                 min(
-                    (proxy.size.width - routingWidth - (compactDeck ? 68 : 160)) / CGFloat(max(faderSpecs.count, 1)),
+                    (proxy.size.width - actionPadWidth - (compactDeck ? 24 : 52)) / CGFloat(max(faderSpecs.count, 1)),
                     compactDeck ? 66 : 92
                 )
             )
 
-            VStack(spacing: tightDeck ? 2 : 18) {
-                encoderRow(compact: tightDeck)
+            VStack(spacing: tightDeck ? 8 : 12) {
+                encoderRow(compact: compactTopBar)
                 divider
                 utilityStrip(compact: compactDeck, tightHeight: tightDeck)
-                monitorPanel(compact: compactDeck, tightHeight: tightDeck)
-                    .frame(height: monitorHeight)
-                Spacer(minLength: tightDeck ? 0 : 4)
+                monitorPanel(compact: compactDeck, tightHeight: tightDeck, panelHeight: monitorHeight)
                 faderModule(
                     trackHeight: trackHeight,
                     faderWidth: faderWidth,
-                    routingWidth: routingWidth,
                     compact: compactDeck,
                     veryCompact: veryCompactDeck,
-                    tightHeight: tightDeck
+                    tightHeight: tightDeck,
+                    actionPadWidth: actionPadWidth
                 )
                     .frame(height: faderModuleHeight, alignment: .bottom)
             }
@@ -553,22 +1051,77 @@ private struct ConsoleDeck: View {
     }
 
     private func encoderRow(compact: Bool) -> some View {
-        HStack(alignment: .top, spacing: compact ? 14 : 42) {
-            ForEach(topActionItems) { item in
-                Button {
-                    onContextAction(item.action)
-                } label: {
-                    ConsoleActionKnob(item: item, compact: compact)
+        Group {
+            if compact {
+                VStack(alignment: .leading, spacing: 12) {
+                    topRouteStrip(compact: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+
+                    HStack(alignment: .top, spacing: 18) {
+                        ForEach(topActionItems) { item in
+                            Button {
+                                onContextAction(item.action)
+                            } label: {
+                                ConsoleActionKnob(item: item, compact: false)
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(!item.isEnabled)
+                            .opacity(item.isEnabled ? 1 : 0.46)
+                        }
+
+                        if let master = knobSpecs.last {
+                            ConsoleKnob(spec: master, compact: true, extraCompact: false)
+                        }
+
+                        Spacer(minLength: 0)
+                    }
                 }
-                .buttonStyle(.plain)
-                .disabled(!item.isEnabled)
-                .opacity(item.isEnabled ? 1 : 0.46)
+            } else {
+                VStack(alignment: .leading, spacing: 16) {
+                    topRouteStrip(compact: false)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+
+                    HStack(alignment: .top, spacing: 24) {
+                        ForEach(topActionItems) { item in
+                            Button {
+                                onContextAction(item.action)
+                            } label: {
+                                ConsoleActionKnob(item: item, compact: false)
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(!item.isEnabled)
+                            .opacity(item.isEnabled ? 1 : 0.46)
+                        }
+
+                        Spacer(minLength: 10)
+
+                        if let master = knobSpecs.last {
+                            ConsoleKnob(spec: master, compact: true, extraCompact: false)
+                        }
+                    }
+                }
             }
+        }
+    }
 
-            Spacer(minLength: compact ? 4 : 16)
-
-            if let master = knobSpecs.last {
-                ConsoleKnob(spec: master, compact: true, extraCompact: compact)
+    private func topRouteStrip(compact: Bool) -> some View {
+        return Group {
+            if compact {
+                HStack(spacing: 16) {
+                    routingHostControl
+                    routingInputControl
+                    routingOutputControl
+                    routingMonitorControl
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                HStack(spacing: 14) {
+                    routingHostControl
+                    routingInputControl
+                    routingOutputControl
+                    routingMonitorControl
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
     }
@@ -577,7 +1130,12 @@ private struct ConsoleDeck: View {
         [
             ConsoleActionItem(id: "boot", title: "BOOT", systemImage: "bolt.fill", action: .startEngine, isEnabled: engineController.state != .ready && engineController.state != .starting, accent: AppTheme.knobBlue),
             ConsoleActionItem(id: "sync", title: "SYNC", systemImage: "arrow.clockwise", action: .refreshModels, isEnabled: engineController.state == .ready, accent: AppTheme.knobOchre),
+            ConsoleActionItem(id: "uvr", title: "UVR", systemImage: "waveform.badge.magnifyingglass", action: .showUVR, isEnabled: engineController.state == .ready, accent: AppTheme.knobOrange),
+            ConsoleActionItem(id: "onnx", title: "ONNX", systemImage: "point.3.connected.trianglepath.dotted", action: .showONNX, isEnabled: engineController.state == .ready, accent: AppTheme.knobBlue),
+            ConsoleActionItem(id: "ckpt", title: "CKPT", systemImage: "cpu", action: .showCheckpointTools, isEnabled: engineController.state == .ready, accent: AppTheme.knobOchre),
             ConsoleActionItem(id: "audio", title: "AUDIO", systemImage: "speaker.wave.2.fill", action: .refreshRealtimeDevices, isEnabled: engineController.state == .ready, accent: AppTheme.knobGrey),
+            ConsoleActionItem(id: "asset", title: "ASSET", systemImage: "shippingbox", action: .showAssetReport, isEnabled: true, accent: AppTheme.knobGrey),
+            ConsoleActionItem(id: "help", title: "HELP", systemImage: "questionmark.circle", action: .showFAQ, isEnabled: true, accent: AppTheme.knobBlue),
             ConsoleActionItem(id: "run", title: realtimeViewModel.isRunning ? "STOP" : "RUN", systemImage: realtimeViewModel.isRunning ? "stop.fill" : "play.fill", action: realtimeViewModel.isRunning ? .stopRealtime : .startRealtime, isEnabled: engineController.state == .ready && selectedModelName != nil && !realtimeMissingRoute, accent: realtimeViewModel.isRunning ? AppTheme.knobGrey : AppTheme.knobOrange),
         ]
     }
@@ -601,41 +1159,28 @@ private struct ConsoleDeck: View {
     private func utilityStrip(compact: Bool, tightHeight: Bool) -> some View {
         let readouts = utilityReadouts
 
-        return VStack(alignment: .leading, spacing: compact ? (tightHeight ? 2 : 10) : 0) {
-            if compact {
-                LazyVGrid(
-                    columns: [
-                        GridItem(.flexible(minimum: tightHeight ? 72 : 92), spacing: tightHeight ? 12 : 18, alignment: .leading),
-                        GridItem(.flexible(minimum: tightHeight ? 72 : 92), spacing: tightHeight ? 12 : 18, alignment: .leading),
-                        GridItem(.flexible(minimum: tightHeight ? 72 : 92), spacing: tightHeight ? 12 : 18, alignment: .leading),
-                    ],
-                    alignment: .leading,
-                    spacing: tightHeight ? 2 : 10
-                ) {
-                    ForEach(readouts.indices, id: \.self) { index in
-                        ConsoleReadout(
-                            label: readouts[index].label,
-                            value: readouts[index].value,
-                            accent: readouts[index].accent
-                        )
-                    }
+        return VStack(alignment: .leading, spacing: tightHeight ? 2 : 4) {
+            HStack(spacing: tightHeight ? 12 : 18) {
+                ForEach(readouts.indices, id: \.self) { index in
+                    Text(readouts[index].label)
+                        .font(.system(size: 10, weight: .medium, design: .monospaced))
+                        .foregroundStyle(AppTheme.labelInk)
+                        .lineLimit(1)
+                        .frame(minWidth: tightHeight ? 72 : 84, maxWidth: .infinity, alignment: .leading)
                 }
-            } else {
-                HStack(spacing: 30) {
-                    ForEach(readouts.indices, id: \.self) { index in
-                        ConsoleReadout(
-                            label: readouts[index].label,
-                            value: readouts[index].value,
-                            accent: readouts[index].accent
-                        )
-                    }
-                    Spacer(minLength: 0)
-                    if isNavigating {
-                        Text(L10n.tr("label.shell_loading"))
-                            .font(.system(size: 11, weight: .medium, design: .monospaced))
-                            .foregroundStyle(AppTheme.labelInk)
-                    }
+                Spacer(minLength: 0)
+            }
+
+            HStack(alignment: .firstTextBaseline, spacing: tightHeight ? 12 : 18) {
+                ForEach(readouts.indices, id: \.self) { index in
+                    Text(readouts[index].value)
+                        .font(.system(size: 11, weight: .medium, design: .monospaced))
+                        .foregroundStyle((readouts[index].accent ?? Color.black).opacity(readouts[index].accent == nil ? 0.62 : 0.78))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.72)
+                        .frame(minWidth: tightHeight ? 72 : 84, maxWidth: .infinity, alignment: .leading)
                 }
+                Spacer(minLength: 0)
             }
         }
     }
@@ -650,24 +1195,17 @@ private struct ConsoleDeck: View {
             ("STATE", engineController.state.label.uppercased(), nil),
             (
                 "INDEX",
-                inferenceViewModel.selectedIndexPath.map(lastPath) ?? "AUTO",
-                inferenceViewModel.selectedIndexPath == nil ? nil : AppTheme.knobOchre
+                inferenceViewModel.customIndexURL?.lastPathComponent ?? inferenceViewModel.selectedIndexPath.map(lastPath) ?? "AUTO",
+                inferenceViewModel.customIndexURL != nil ? AppTheme.knobBlue : (inferenceViewModel.selectedIndexPath == nil ? nil : AppTheme.knobOchre)
             ),
-            (
-                "INPUT",
-                realtimeViewModel.selectedInputDevice?.uppercased() ?? "NONE",
-                realtimeViewModel.selectedInputDevice == nil ? nil : AppTheme.knobBlue
-            ),
-            (
-                "OUTPUT",
-                realtimeViewModel.selectedOutputDevice?.uppercased() ?? "NONE",
-                realtimeViewModel.selectedOutputDevice == nil ? nil : AppTheme.knobOchre
-            ),
-            ("MODE", realtimeViewModel.monitorMode == .outputConverted ? "VC" : "MON", nil),
+            ("BANK", parameterBank.title.uppercased(), parameterBank == .single ? AppTheme.knobOrange : AppTheme.knobBlue),
+            ("RATE", realtimeViewModel.sampleRate > 0 ? "\(realtimeViewModel.sampleRate)" : "—", nil),
+            ("DELAY", "\(realtimeViewModel.delayTimeMs)MS", realtimeViewModel.isRunning ? AppTheme.knobOrange : nil),
+            ("INFER", "\(realtimeViewModel.inferTimeMs)MS", realtimeViewModel.isRunning ? AppTheme.knobBlue : nil),
         ]
     }
 
-    private func monitorPanel(compact: Bool, tightHeight: Bool) -> some View {
+    private func monitorPanel(compact: Bool, tightHeight: Bool, panelHeight: CGFloat) -> some View {
         VStack(alignment: .leading, spacing: tightHeight ? 3 : 12) {
             HStack {
                 Text("VOICE PATCH")
@@ -680,52 +1218,38 @@ private struct ConsoleDeck: View {
             .font(.system(size: 11, weight: .bold, design: .monospaced))
             .foregroundStyle(Color.white.opacity(0.82))
 
-            ConsoleWaveformView()
-                .frame(height: tightHeight ? 54 : 104)
-
             if tightHeight {
+                ConsoleWaveformView()
+                    .frame(height: 58)
+
                 compactMonitorSummary
             } else {
-                HStack(alignment: .top, spacing: compact ? 10 : 18) {
-                    VStack(alignment: .leading, spacing: 6) {
-                        monitorRow("MODEL", selectedModelName ?? "NONE", compact: tightHeight)
-                        monitorRow("INPUT", realtimeViewModel.selectedInputDevice ?? "NONE", compact: tightHeight)
-                        monitorRow("INDEX", inferenceViewModel.selectedIndexPath.map(lastPath) ?? "AUTO", compact: tightHeight)
-                        monitorRow("MONITOR", realtimeViewModel.monitorMode == .outputConverted ? "VC" : "INPUT", compact: tightHeight)
-                    }
+                Group {
+                    if compact {
+                        VStack(alignment: .leading, spacing: 10) {
+                            ConsoleWaveformView()
+                                .frame(maxWidth: .infinity)
+                                .frame(height: 84)
 
-                    Spacer(minLength: 0)
+                            monitorSummaryGrid(compact: true)
+                        }
+                    } else {
+                        HStack(alignment: .top, spacing: 16) {
+                            ConsoleWaveformView()
+                                .frame(maxWidth: .infinity)
+                                .frame(height: 132)
 
-                    VStack(alignment: .leading, spacing: 6) {
-                        monitorRow("OUTPUT", realtimeViewModel.selectedOutputDevice ?? "NONE", compact: tightHeight)
-                        monitorRow("RATE", realtimeViewModel.sampleRate > 0 ? "\(realtimeViewModel.sampleRate)" : "—", compact: tightHeight)
-                        monitorRow("DELAY", "\(realtimeViewModel.delayTimeMs)MS", compact: tightHeight)
-                        monitorRow("INFER", "\(realtimeViewModel.inferTimeMs)MS", compact: tightHeight)
+                            monitorSummaryGrid(compact: false)
+                                .frame(width: 286, alignment: .leading)
+                        }
                     }
                 }
             }
 
             monitorMetricsBar(tightHeight: tightHeight)
-
-            if !tightHeight && !models.isEmpty {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 8) {
-                        ForEach(models.prefix(8)) { model in
-                            Text(model.name.replacingOccurrences(of: ".pth", with: "").uppercased())
-                                .font(.system(size: 9, weight: .medium, design: .monospaced))
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 5)
-                                .background(
-                                    Capsule(style: .continuous)
-                                        .fill(model.name == selectedModelName ? AppTheme.knobOrange.opacity(0.34) : Color.white.opacity(0.08))
-                                )
-                        }
-                    }
-                }
-            }
         }
         .padding(tightHeight ? 7 : 14)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .frame(maxWidth: .infinity, minHeight: panelHeight, maxHeight: panelHeight, alignment: .topLeading)
         .background(
             RoundedRectangle(cornerRadius: 4, style: .continuous)
                 .fill(Color(hex: 0x080808))
@@ -735,6 +1259,33 @@ private struct ConsoleDeck: View {
                 .strokeBorder(Color.black.opacity(0.86), lineWidth: 4)
         )
         .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+    }
+
+    private func monitorSummaryGrid(compact: Bool) -> some View {
+        let items: [(String, String)] = [
+            ("MODEL", selectedModelName ?? "NONE"),
+            ("INPUT", realtimeViewModel.selectedInputDevice ?? "NONE"),
+            ("OUTPUT", realtimeViewModel.selectedOutputDevice ?? "NONE"),
+            ("INDEX", inferenceViewModel.selectedIndexPath.map(lastPath) ?? "AUTO"),
+            ("BANK", parameterBank.title.uppercased()),
+            ("MONITOR", realtimeViewModel.monitorMode == .outputConverted ? "VC" : "INPUT"),
+            ("RATE", realtimeViewModel.sampleRate > 0 ? "\(realtimeViewModel.sampleRate)" : "—"),
+            ("DELAY", "\(realtimeViewModel.delayTimeMs)MS"),
+            ("INFER", "\(realtimeViewModel.inferTimeMs)MS"),
+        ]
+
+        return LazyVGrid(
+            columns: [
+                GridItem(.flexible(minimum: compact ? 96 : 122), spacing: compact ? 10 : 16, alignment: .leading),
+                GridItem(.flexible(minimum: compact ? 96 : 122), spacing: compact ? 10 : 16, alignment: .leading),
+            ],
+            alignment: .leading,
+            spacing: compact ? 6 : 8
+        ) {
+            ForEach(items.indices, id: \.self) { index in
+                monitorRow(items[index].0, items[index].1, compact: compact)
+            }
+        }
     }
 
     private func monitorRow(_ label: String, _ value: String, compact: Bool) -> some View {
@@ -754,6 +1305,7 @@ private struct ConsoleDeck: View {
             compactMonitorToken("MODEL", selectedModelName?.replacingOccurrences(of: ".pth", with: "") ?? "NONE", accent: selectedModelName == nil ? nil : AppTheme.knobOrange)
             compactMonitorToken("INPUT", realtimeViewModel.selectedInputDevice ?? "NONE", accent: realtimeViewModel.selectedInputDevice == nil ? nil : AppTheme.knobBlue)
             compactMonitorToken("OUTPUT", realtimeViewModel.selectedOutputDevice ?? "NONE", accent: realtimeViewModel.selectedOutputDevice == nil ? nil : AppTheme.knobOchre)
+            compactMonitorToken("BANK", parameterBank.title.uppercased(), accent: parameterBank == .single ? AppTheme.knobOrange : AppTheme.knobBlue)
             compactMonitorToken("MON", realtimeViewModel.monitorMode == .outputConverted ? "VC" : "INPUT", accent: realtimeViewModel.isRunning ? AppTheme.knobOrange : nil)
             Spacer(minLength: 0)
         }
@@ -857,33 +1409,111 @@ private struct ConsoleDeck: View {
         (path as NSString).lastPathComponent
     }
 
-    private func faderModule(trackHeight: CGFloat, faderWidth: CGFloat, routingWidth: CGFloat, compact: Bool, veryCompact: Bool, tightHeight: Bool) -> some View {
-        Group {
-            if veryCompact {
-                VStack(alignment: .leading, spacing: tightHeight ? 6 : 14) {
-                    routingBank(tightHeight: tightHeight)
-                    faderStack(trackHeight: trackHeight, faderWidth: faderWidth, compact: compact, tightHeight: tightHeight)
-                }
-            } else {
-                HStack(alignment: .bottom, spacing: compact ? 12 : 32) {
-                    routingBank(tightHeight: tightHeight)
-                        .frame(width: routingWidth)
-                        .frame(maxHeight: .infinity, alignment: .bottomLeading)
-                    faderStack(trackHeight: trackHeight, faderWidth: faderWidth, compact: compact, tightHeight: tightHeight)
-                }
+    private var contextActions: [ConsoleActionItem] {
+        [
+            ConsoleActionItem(id: "pth", title: "PTH", systemImage: "folder", action: .openWeights, isEnabled: true, accent: nil),
+            ConsoleActionItem(id: "idx", title: "IDX", systemImage: "folder.badge.gearshape", action: .openIndices, isEnabled: true, accent: nil),
+            ConsoleActionItem(id: "dir", title: "DIR", systemImage: "folder.fill", action: .chooseBatchInputFolder, isEnabled: true, accent: nil),
+            ConsoleActionItem(id: "files", title: "FILES", systemImage: "music.note.list", action: .chooseBatchInputFiles, isEnabled: true, accent: nil),
+            ConsoleActionItem(id: "out", title: "OUT", systemImage: "folder.badge.plus", action: .chooseBatchOutputFolder, isEnabled: true, accent: nil),
+            ConsoleActionItem(id: "single", title: "REC", systemImage: "record.circle", action: .convertSingle, isEnabled: engineController.state == .ready && !inferenceViewModel.isRunning, accent: AppTheme.knobOrange),
+            ConsoleActionItem(id: "play", title: "PLAY", systemImage: "play.fill", action: .playPreview, isEnabled: inferenceViewModel.outputAudioURL != nil, accent: AppTheme.knobOrange),
+            ConsoleActionItem(id: "open", title: "OPEN", systemImage: "folder.badge.waveform", action: .revealOutput, isEnabled: inferenceViewModel.outputAudioURL != nil, accent: nil),
+            ConsoleActionItem(id: "unld", title: "UNLD", systemImage: "eject.fill", action: .unloadModel, isEnabled: selectedModelName != nil, accent: AppTheme.knobGrey),
+        ]
+    }
+
+    private func faderModule(trackHeight: CGFloat, faderWidth: CGFloat, compact: Bool, veryCompact: Bool, tightHeight: Bool, actionPadWidth: CGFloat) -> some View {
+        VStack(spacing: 0) {
+            Spacer(minLength: 0)
+
+            HStack(alignment: .bottom, spacing: compact ? 8 : 12) {
+                deckActionPad(compact: compact, tight: tightHeight, width: actionPadWidth)
+                    .frame(width: actionPadWidth, alignment: .leading)
+                faderStack(trackHeight: trackHeight, faderWidth: faderWidth, compact: compact, tightHeight: tightHeight)
             }
         }
-        .padding(.top, tightHeight ? 0 : 6)
         .frame(maxHeight: .infinity, alignment: .bottom)
+        .clipped()
+    }
+
+    private func deckActionPad(compact: Bool, tight: Bool, width: CGFloat) -> some View {
+        let buttonSize: CGFloat = tight ? 36 : (compact ? 36 : 42)
+        let actionColumnCount = tight ? 2 : (compact ? 4 : contextActions.count)
+        let actionColumnSpacing = tight ? 8.0 : (compact ? 8.0 : 10.0)
+        let actionGridWidth = (CGFloat(actionColumnCount) * buttonSize) + (CGFloat(max(actionColumnCount - 1, 0)) * actionColumnSpacing)
+        let actionRows: [[ConsoleActionItem]] = stride(from: 0, to: contextActions.count, by: actionColumnCount).map { start in
+            let end = min(start + actionColumnCount, contextActions.count)
+            return Array(contextActions[start..<end])
+        }
+        return VStack(alignment: .leading, spacing: tight ? 5 : 7) {
+            Spacer(minLength: 0)
+
+            patchSidecar(compact: compact)
+
+            Spacer(minLength: tight ? 2 : (compact ? 8 : 4))
+
+            Group {
+                if !compact && !tight {
+                    HStack(spacing: actionColumnSpacing) {
+                        ForEach(contextActions) { item in
+                            contextActionButton(item, buttonSize: buttonSize, tight: tight)
+                        }
+                        Spacer(minLength: 0)
+                    }
+                } else {
+                    VStack(alignment: .leading, spacing: tight ? 6 : 12) {
+                        ForEach(Array(actionRows.enumerated()), id: \.offset) { _, row in
+                            HStack(spacing: 0) {
+                                ForEach(0..<actionColumnCount, id: \.self) { column in
+                                    Group {
+                                        if column < row.count {
+                                            contextActionButton(row[column], buttonSize: buttonSize, tight: tight)
+                                        } else {
+                                            Color.clear
+                                                .frame(width: buttonSize, height: buttonSize)
+                                        }
+                                    }
+                                    .frame(maxWidth: .infinity, alignment: .center)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            .frame(width: compact ? width : actionGridWidth, alignment: .leading)
+        }
+        .frame(maxHeight: .infinity, alignment: .bottomLeading)
+        .padding(.bottom, tight ? 2 : 4)
+    }
+
+    @ViewBuilder
+    private func contextActionButton(_ item: ConsoleActionItem, buttonSize: CGFloat, tight: Bool) -> some View {
+        Button {
+            onContextAction(item.action)
+        } label: {
+            if item.title.count <= 3 {
+                VStack(spacing: tight ? 2 : 3) {
+                    Image(systemName: item.systemImage)
+                        .font(.system(size: tight ? 10 : 11, weight: .semibold))
+                    Text(item.title)
+                        .font(.system(size: tight ? 8 : 9, weight: .medium, design: .rounded))
+                }
+                .frame(width: buttonSize, height: buttonSize)
+            } else {
+                Text(item.title)
+                    .font(.system(size: tight ? 8 : 9, weight: .medium, design: .rounded))
+                    .frame(width: buttonSize, height: buttonSize)
+            }
+        }
+        .buttonStyle(ConsoleRoundButtonStyle(accent: item.accent))
+        .disabled(!item.isEnabled)
+        .opacity(item.isEnabled ? 1 : 0.48)
     }
 
     private func faderStack(trackHeight: CGFloat, faderWidth: CGFloat, compact: Bool, tightHeight: Bool) -> some View {
         VStack(alignment: .leading, spacing: tightHeight ? 4 : 10) {
-            Text("PARAMETER BANK")
-                .font(.system(size: 12, weight: .semibold, design: .monospaced))
-                .foregroundStyle(AppTheme.labelInk)
-
-            Spacer(minLength: tightHeight ? 0 : 6)
+            Spacer(minLength: tightHeight ? 16 : 28)
 
             HStack(alignment: .bottom, spacing: compact ? max(6, faderWidth * 0.08) : max(16, faderWidth * 0.14)) {
                 if !compact {
@@ -900,44 +1530,71 @@ private struct ConsoleDeck: View {
         }
     }
 
-    private func routingBank(tightHeight: Bool) -> some View {
-        VStack(alignment: .leading, spacing: tightHeight ? 6 : 14) {
-            HStack(alignment: .firstTextBaseline) {
-                Text("ROUTING")
-                    .font(.system(size: 12, weight: .semibold, design: .monospaced))
-                    .foregroundStyle(AppTheme.labelInk)
-                Spacer(minLength: 8)
-                Button("SCAN") {
-                    onContextAction(.refreshRealtimeDevices)
+    private func patchSidecar(compact: Bool) -> some View {
+        HStack(alignment: .top, spacing: compact ? 10 : 12) {
+            ConsolePatchMenuCard(
+                title: "PARAM BANK",
+                value: parameterBank.title.uppercased(),
+                detail: parameterBank.detail,
+                actionLabel: "SET",
+                accent: parameterBank == .single ? AppTheme.knobOrange : AppTheme.knobBlue,
+                options: ConsoleParameterBank.allCases.map { bank in
+                    ConsolePickerOption(id: bank.rawValue, title: bank.title.uppercased(), subtitle: bank.detail)
+                },
+                selectedID: parameterBank.rawValue,
+                emptyState: "Choose parameter bank",
+                compactHeight: true,
+                onSelect: { bankID in
+                    guard let bank = ConsoleParameterBank(rawValue: bankID) else { return }
+                    onSelectParameterBank(bank)
                 }
-                .buttonStyle(.plain)
-                .font(.system(size: 10, weight: .bold, design: .monospaced))
-                .foregroundStyle(AppTheme.knobBlue.opacity(0.84))
-            }
+            )
+            .frame(maxWidth: .infinity, minHeight: compact ? 72 : 74, alignment: .leading)
 
-            if tightHeight {
-                LazyVGrid(
-                    columns: [
-                        GridItem(.flexible(minimum: 64), spacing: 10, alignment: .leading),
-                        GridItem(.flexible(minimum: 64), spacing: 10, alignment: .leading),
-                    ],
-                    alignment: .leading,
-                    spacing: 8
-                ) {
-                    routingHostControl
-                    routingInputControl
-                    routingOutputControl
-                    routingMonitorControl
+            ConsolePatchMenuCard(
+                title: "INDEX FILE",
+                value: inferenceViewModel.customIndexURL?.lastPathComponent ?? inferenceViewModel.selectedIndexPath.map(lastPath) ?? "Optional / auto",
+                detail: inferenceViewModel.customIndexURL == nil ? (indexPaths.isEmpty ? "Optional for RVC" : "\(indexPaths.count) loaded, optional") : "External override active",
+                actionLabel: "PICK",
+                accent: inferenceViewModel.selectedIndexPath == nil ? nil : AppTheme.knobOchre,
+                options: (inferenceViewModel.customIndexURL.map {
+                    [ConsolePickerOption(id: "__custom_active__", title: "Custom override", subtitle: $0.lastPathComponent)]
+                } ?? []) + [
+                    ConsolePickerOption(id: "__choose_custom__", title: "Choose external index", subtitle: "Use a custom .index file or compatible path"),
+                ] + (inferenceViewModel.customIndexURL == nil ? [] : [
+                    ConsolePickerOption(id: "__clear_custom__", title: "Clear override", subtitle: "Return to catalog or auto index")
+                ]) + [
+                    ConsolePickerOption(id: "__auto_optional__", title: "No index", subtitle: "Optional, auto-match if available")
+                ] + indexPaths.map {
+                    ConsolePickerOption(id: $0, title: lastPath($0), subtitle: nil)
+                },
+                selectedID: inferenceViewModel.customIndexURL != nil ? "__custom_active__" : (inferenceViewModel.selectedIndexPath ?? "__auto_optional__"),
+                emptyState: "No index needed",
+                compactHeight: true,
+                onSelect: { selection in
+                    switch selection {
+                    case "__choose_custom__":
+                        onContextAction(.chooseCustomIndexFile)
+                    case "__clear_custom__":
+                        onContextAction(.clearCustomIndexFile)
+                    case "__custom_active__":
+                        break
+                    case "__auto_optional__":
+                        inferenceViewModel.customIndexURL = nil
+                        batchViewModel.customIndexURL = nil
+                        inferenceViewModel.selectedIndexPath = nil
+                        batchViewModel.selectedIndexPath = nil
+                    default:
+                        inferenceViewModel.customIndexURL = nil
+                        batchViewModel.customIndexURL = nil
+                        inferenceViewModel.selectedIndexPath = selection
+                        batchViewModel.selectedIndexPath = selection
+                    }
                 }
-            } else {
-                VStack(alignment: .leading, spacing: 14) {
-                    routingHostControl
-                    routingInputControl
-                    routingOutputControl
-                    routingMonitorControl
-                }
-            }
+            )
+            .frame(maxWidth: .infinity, minHeight: compact ? 72 : 74, alignment: .leading)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var routingHostControl: some View {
@@ -954,7 +1611,7 @@ private struct ConsoleDeck: View {
             Task {
                 await realtimeViewModel.configure(
                     selectedModelName: selectedModelName,
-                    selectedIndexPath: inferenceViewModel.selectedIndexPath,
+                    selectedIndexPath: inferenceViewModel.effectiveIndexPath,
                     inferenceViewModel: inferenceViewModel
                 )
                 onContextAction(.refreshRealtimeDevices)
@@ -976,7 +1633,7 @@ private struct ConsoleDeck: View {
             Task {
                 await realtimeViewModel.configure(
                     selectedModelName: selectedModelName,
-                    selectedIndexPath: inferenceViewModel.selectedIndexPath,
+                    selectedIndexPath: inferenceViewModel.effectiveIndexPath,
                     inferenceViewModel: inferenceViewModel
                 )
             }
@@ -997,7 +1654,7 @@ private struct ConsoleDeck: View {
             Task {
                 await realtimeViewModel.configure(
                     selectedModelName: selectedModelName,
-                    selectedIndexPath: inferenceViewModel.selectedIndexPath,
+                    selectedIndexPath: inferenceViewModel.effectiveIndexPath,
                     inferenceViewModel: inferenceViewModel
                 )
             }
@@ -1021,7 +1678,7 @@ private struct ConsoleDeck: View {
             Task {
                 await realtimeViewModel.configure(
                     selectedModelName: selectedModelName,
-                    selectedIndexPath: inferenceViewModel.selectedIndexPath,
+                    selectedIndexPath: inferenceViewModel.effectiveIndexPath,
                     inferenceViewModel: inferenceViewModel
                 )
             }
@@ -1030,25 +1687,49 @@ private struct ConsoleDeck: View {
 
     private var knobSpecs: [ConsoleControlSpec] {
         [
-            ConsoleControlSpec(id: "pitch", title: L10n.tr("slider.transpose"), shortTitle: "PIT", color: AppTheme.knobBlue, value: $inferenceViewModel.transpose, range: -24...24, step: 1, isInteractive: true, formatter: integerString),
-            ConsoleControlSpec(id: "index", title: L10n.tr("slider.index_rate"), shortTitle: "IDX", color: AppTheme.knobOchre, value: $inferenceViewModel.indexRate, range: 0...1, step: 0.01, isInteractive: true, formatter: decimalString),
-            ConsoleControlSpec(id: "guard", title: L10n.tr("slider.protect"), shortTitle: "GRD", color: AppTheme.knobGrey, value: $inferenceViewModel.protect, range: 0...0.5, step: 0.01, isInteractive: true, formatter: decimalString),
-            ConsoleControlSpec(id: "rms", title: L10n.tr("slider.rms_mix"), shortTitle: "RMS", color: AppTheme.knobOrange, value: $inferenceViewModel.rmsMixRate, range: 0...1, step: 0.01, isInteractive: true, formatter: decimalString),
+            ConsoleControlSpec(id: "pitch", title: "\(parameterBank.title.uppercased()) PIT", shortTitle: "PIT", color: parameterBank == .single ? AppTheme.knobBlue : AppTheme.knobOrange, value: parameterTranspose, range: -24...24, step: 1, isInteractive: true, formatter: integerString),
+            ConsoleControlSpec(id: "index", title: "\(parameterBank.title.uppercased()) IDX", shortTitle: "IDX", color: AppTheme.knobOchre, value: parameterIndexRate, range: 0...1, step: 0.01, isInteractive: true, formatter: decimalString),
+            ConsoleControlSpec(id: "guard", title: "\(parameterBank.title.uppercased()) GRD", shortTitle: "GRD", color: AppTheme.knobGrey, value: parameterProtect, range: 0...0.5, step: 0.01, isInteractive: true, formatter: decimalString),
+            ConsoleControlSpec(id: "rms", title: "\(parameterBank.title.uppercased()) RMS", shortTitle: "RMS", color: parameterBank == .single ? AppTheme.knobOrange : AppTheme.knobBlue, value: parameterRMSMixRate, range: 0...1, step: 0.01, isInteractive: true, formatter: decimalString),
             ConsoleControlSpec(id: "master", title: "MASTER", shortTitle: "MST", color: AppTheme.knobWhite, value: .constant(normalizedActivity), range: 0...1, step: 0.01, isInteractive: false, formatter: percentString),
         ]
     }
 
     private var faderSpecs: [ConsoleControlSpec] {
         [
-            ConsoleControlSpec(id: "pitch", title: "PITCH", shortTitle: "PIT", color: AppTheme.knobWhite, value: $inferenceViewModel.transpose, range: -24...24, step: 1, isInteractive: true, formatter: integerString),
-            ConsoleControlSpec(id: "index", title: "INDEX", shortTitle: "IDX", color: AppTheme.knobWhite, value: $inferenceViewModel.indexRate, range: 0...1, step: 0.01, isInteractive: true, formatter: decimalString),
-            ConsoleControlSpec(id: "filter", title: "FILTER", shortTitle: "FLT", color: AppTheme.knobWhite, value: $inferenceViewModel.filterRadius, range: 0...7, step: 1, isInteractive: true, formatter: integerString),
-            ConsoleControlSpec(id: "sample", title: "RESAMP", shortTitle: "RSP", color: AppTheme.knobWhite, value: $inferenceViewModel.resampleSR, range: 0...48_000, step: 100, isInteractive: true, formatter: integerString),
-            ConsoleControlSpec(id: "rms", title: "RMS", shortTitle: "RMS", color: AppTheme.knobWhite, value: $inferenceViewModel.rmsMixRate, range: 0...1, step: 0.01, isInteractive: true, formatter: decimalString),
-            ConsoleControlSpec(id: "protect", title: "GUARD", shortTitle: "GRD", color: AppTheme.knobWhite, value: $inferenceViewModel.protect, range: 0...0.5, step: 0.01, isInteractive: true, formatter: decimalString),
+            ConsoleControlSpec(id: "pitch", title: "PITCH", shortTitle: parameterBank == .single ? "S-P" : "B-P", color: AppTheme.knobWhite, value: parameterTranspose, range: -24...24, step: 1, isInteractive: true, formatter: integerString),
+            ConsoleControlSpec(id: "index", title: "INDEX", shortTitle: parameterBank == .single ? "S-I" : "B-I", color: AppTheme.knobWhite, value: parameterIndexRate, range: 0...1, step: 0.01, isInteractive: true, formatter: decimalString),
+            ConsoleControlSpec(id: "filter", title: "FILTER", shortTitle: parameterBank == .single ? "S-F" : "B-F", color: AppTheme.knobWhite, value: parameterFilterRadius, range: 0...7, step: 1, isInteractive: true, formatter: integerString),
+            ConsoleControlSpec(id: "sample", title: "RESAMP", shortTitle: parameterBank == .single ? "S-R" : "B-R", color: AppTheme.knobWhite, value: parameterResampleSR, range: 0...48_000, step: 100, isInteractive: true, formatter: integerString),
+            ConsoleControlSpec(id: "rms", title: "RMS", shortTitle: parameterBank == .single ? "S-M" : "B-M", color: AppTheme.knobWhite, value: parameterRMSMixRate, range: 0...1, step: 0.01, isInteractive: true, formatter: decimalString),
+            ConsoleControlSpec(id: "protect", title: "GUARD", shortTitle: parameterBank == .single ? "S-G" : "B-G", color: AppTheme.knobWhite, value: parameterProtect, range: 0...0.5, step: 0.01, isInteractive: true, formatter: decimalString),
             ConsoleControlSpec(id: "batch", title: "QUEUE", shortTitle: "QUE", color: AppTheme.knobWhite, value: .constant(batchViewModel.inputDirectoryURL != nil || !batchViewModel.inputFileURLs.isEmpty ? 1 : 0.15), range: 0...1, step: 0.01, isInteractive: false, formatter: percentString),
             ConsoleControlSpec(id: "preview", title: "PLAY", shortTitle: "PLY", color: AppTheme.knobWhite, value: .constant(inferenceViewModel.outputAudioURL == nil ? 0.15 : 1), range: 0...1, step: 0.01, isInteractive: false, formatter: percentString),
         ]
+    }
+
+    private var parameterTranspose: Binding<Double> {
+        parameterBank == .single ? $inferenceViewModel.transpose : $batchViewModel.transpose
+    }
+
+    private var parameterIndexRate: Binding<Double> {
+        parameterBank == .single ? $inferenceViewModel.indexRate : $batchViewModel.indexRate
+    }
+
+    private var parameterFilterRadius: Binding<Double> {
+        parameterBank == .single ? $inferenceViewModel.filterRadius : $batchViewModel.filterRadius
+    }
+
+    private var parameterResampleSR: Binding<Double> {
+        parameterBank == .single ? $inferenceViewModel.resampleSR : $batchViewModel.resampleSR
+    }
+
+    private var parameterRMSMixRate: Binding<Double> {
+        parameterBank == .single ? $inferenceViewModel.rmsMixRate : $batchViewModel.rmsMixRate
+    }
+
+    private var parameterProtect: Binding<Double> {
+        parameterBank == .single ? $inferenceViewModel.protect : $batchViewModel.protect
     }
 
     private var normalizedActivity: Double {
@@ -1083,6 +1764,7 @@ private struct ConsoleDeck: View {
     private func percentString(_ value: Double) -> String {
         "\(Int((value * 100).rounded()))%"
     }
+
 }
 
 private struct ConsoleKnob: View {
@@ -1238,7 +1920,7 @@ private struct ConsoleActionKnob: View {
     var compact = false
 
     var body: some View {
-        VStack(spacing: compact ? 3 : 12) {
+        VStack(spacing: compact ? 2 : 6) {
             ZStack {
                 Circle()
                     .fill(
@@ -1257,11 +1939,11 @@ private struct ConsoleActionKnob: View {
 
                 Circle()
                     .fill(item.accent ?? AppTheme.knobWhite)
-                    .padding(compact ? 8 : 11)
+                    .padding(compact ? 6 : 8)
                     .overlay(
                         Circle()
                             .strokeBorder(Color.black.opacity(0.08), lineWidth: 1)
-                            .padding(compact ? 8 : 11)
+                            .padding(compact ? 6 : 8)
                     )
                     .shadow(color: Color.black.opacity(0.30), radius: 2.5, y: 2)
                     .shadow(color: Color.black.opacity(0.12), radius: 5, y: 4)
@@ -1274,21 +1956,21 @@ private struct ConsoleActionKnob: View {
                                     endPoint: .bottom
                                 )
                             )
-                            .padding(compact ? 8 : 11)
+                            .padding(compact ? 6 : 8)
                     }
                     .overlay {
                         Image(systemName: item.systemImage)
-                            .font(.system(size: compact ? 10 : 14, weight: .bold))
+                            .font(.system(size: compact ? 8 : 11, weight: .bold))
                             .foregroundStyle(Color.white.opacity(0.92))
                     }
             }
-            .frame(width: compact ? 34 : 66, height: compact ? 34 : 66)
+            .frame(width: compact ? 26 : 46, height: compact ? 26 : 46)
 
             Text(item.title)
-                .font(.system(size: compact ? 5 : 10, weight: .medium, design: .monospaced))
+                .font(.system(size: compact ? 5 : 7, weight: .medium, design: .monospaced))
                 .foregroundStyle(AppTheme.labelInk)
         }
-        .frame(width: compact ? 36 : 76)
+        .frame(width: compact ? 30 : 50)
     }
 }
 
@@ -1360,9 +2042,10 @@ private struct ConsoleFader: View {
                     .offset(y: faderOffset)
                     .shadow(color: AppTheme.contactShadow.opacity(0.22), radius: 1.2, y: 1)
                     .shadow(color: AppTheme.hardShadow.opacity(0.26), radius: 4, y: 4)
-                    .gesture(faderGesture)
             }
             .frame(width: max(50, width * 0.72), height: trackHeight)
+            .contentShape(Rectangle())
+            .highPriorityGesture(faderGesture, including: .all)
 
             ZStack {
                 Circle()
@@ -1382,12 +2065,12 @@ private struct ConsoleFader: View {
 
             if !compactHeight {
                 Text(spec.displayValue())
-                    .font(.system(size: 10, weight: .medium, design: .rounded))
-                    .foregroundStyle(.secondary)
+                    .font(.system(size: 10, weight: .semibold, design: .rounded))
+                    .foregroundColor(valueTint)
             }
         }
         .frame(width: width)
-        .frame(maxHeight: .infinity, alignment: .top)
+        .frame(maxHeight: .infinity, alignment: .bottom)
         .opacity(spec.isInteractive ? 1 : 0.8)
     }
 
@@ -1402,6 +2085,10 @@ private struct ConsoleFader: View {
 
     private var indicatorColor: Color {
         normalizedValue > 0.6 ? AppTheme.ledGreen : Color(hex: 0x3A3A3A)
+    }
+
+    private var valueTint: Color {
+        Color(hex: 0x7A7F87)
     }
 
     private var travel: CGFloat {
@@ -1432,6 +2119,44 @@ private struct ConsoleFader: View {
     }
 }
 
+private struct WindowChromeConfigurator: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        DispatchQueue.main.async {
+            configureWindow(for: view)
+        }
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        DispatchQueue.main.async {
+            configureWindow(for: nsView)
+        }
+    }
+
+    private func configureWindow(for view: NSView) {
+        guard let window = view.window else { return }
+
+        let background = NSColor(
+            calibratedRed: 0xF3 / 255.0,
+            green: 0xF3 / 255.0,
+            blue: 0xF5 / 255.0,
+            alpha: 1
+        )
+
+        window.titleVisibility = .hidden
+        window.titlebarAppearsTransparent = true
+        window.isMovableByWindowBackground = false
+        window.backgroundColor = background
+        window.toolbar = nil
+        window.toolbarStyle = .unifiedCompact
+        window.appearance = NSAppearance(named: .aqua)
+
+        window.contentView?.wantsLayer = true
+        window.contentView?.layer?.backgroundColor = background.cgColor
+    }
+}
+
 private struct ConsoleToastView: View {
     let toast: AppToast
 
@@ -1439,30 +2164,60 @@ private struct ConsoleToastView: View {
         HStack(spacing: 12) {
             ZStack {
                 Circle()
-                    .fill(iconTint.opacity(0.18))
-                    .frame(width: 28, height: 28)
+                    .fill(Color(hex: 0xF4F4F6))
+                    .frame(width: 32, height: 32)
+                    .overlay(
+                        Circle()
+                            .strokeBorder(Color.white.opacity(0.82), lineWidth: 1)
+                    )
+                    .overlay(
+                        Circle()
+                            .strokeBorder(Color.black.opacity(0.06), lineWidth: 1)
+                    )
+                    .shadow(color: AppTheme.contactShadow.opacity(0.18), radius: 1.2, y: 1)
+                    .shadow(color: AppTheme.hardShadow.opacity(0.18), radius: 4, y: 3)
                 Image(systemName: iconName)
                     .font(.system(size: 13, weight: .bold))
                     .foregroundStyle(iconTint)
             }
 
-            Text(toast.message)
-                .font(.system(size: 12, weight: .semibold, design: .rounded))
-                .foregroundStyle(Color.black.opacity(0.78))
-                .lineLimit(2)
-                .frame(maxWidth: 320, alignment: .leading)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(styleLabel)
+                    .font(.system(size: 9, weight: .bold, design: .monospaced))
+                    .foregroundStyle(Color.black.opacity(0.52))
+
+                Text(toast.message)
+                    .font(.system(size: 12, weight: .semibold, design: .rounded))
+                    .foregroundStyle(Color.black.opacity(0.78))
+                    .lineLimit(2)
+                    .frame(maxWidth: 300, alignment: .leading)
+            }
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 12)
         .background(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(AppTheme.panelGradient)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .strokeBorder(iconTint.opacity(0.42), lineWidth: 1)
-                )
+            ZStack(alignment: .leading) {
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(Color(hex: 0xF5F5F7))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .strokeBorder(Color.black.opacity(0.09), lineWidth: 1)
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .strokeBorder(Color.white.opacity(0.72), lineWidth: 1)
+                            .padding(0.5)
+                    )
+
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(iconTint.opacity(0.92))
+                    .frame(width: 3)
+                    .padding(.vertical, 10)
+                    .padding(.leading, 6)
+            }
         )
-        .shadow(color: Color.black.opacity(0.16), radius: 12, y: 8)
+        .shadow(color: AppTheme.contactShadow.opacity(0.18), radius: 2, y: 1)
+        .shadow(color: AppTheme.hardShadow.opacity(0.24), radius: 12, y: 8)
     }
 
     private var iconName: String {
@@ -1484,6 +2239,17 @@ private struct ConsoleToastView: View {
             return AppTheme.ledGreen
         case .info:
             return AppTheme.knobBlue
+        }
+    }
+
+    private var styleLabel: String {
+        switch toast.style {
+        case .error:
+            return "ERROR"
+        case .success:
+            return "SUCCESS"
+        case .info:
+            return "INFO"
         }
     }
 }
@@ -1522,18 +2288,21 @@ private struct ConsoleReadout: View {
     let label: String
     let value: String
     var accent: Color? = nil
+    var compact = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        HStack(alignment: .firstTextBaseline, spacing: compact ? 6 : 8) {
             Text(label)
-                .font(.system(size: 10, weight: .medium, design: .monospaced))
+                .font(.system(size: compact ? 8 : 9, weight: .semibold, design: .monospaced))
                 .foregroundStyle(AppTheme.labelInk)
+                .fixedSize()
             Text(value)
-                .font(.system(size: 11, weight: .medium, design: .monospaced))
+                .font(.system(size: compact ? 9 : 10, weight: .medium, design: .monospaced))
                 .foregroundStyle((accent ?? Color.black).opacity(accent == nil ? 0.62 : 0.78))
                 .lineLimit(1)
+                .minimumScaleFactor(0.72)
         }
-        .frame(minWidth: 72, alignment: .leading)
+        .frame(minWidth: compact ? 84 : 92, alignment: .leading)
     }
 }
 
@@ -1650,47 +2419,32 @@ private struct ConsoleInlineRouteControl: View {
                             .offset(y: -1)
                     }
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(width: compactHeight ? 112 : 132, alignment: .leading)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .popover(isPresented: $isPresented, arrowEdge: .trailing) {
             VStack(alignment: .leading, spacing: 10) {
-                Text(title)
-                    .font(.system(size: 11, weight: .bold, design: .monospaced))
-                    .foregroundStyle(AppTheme.labelInk)
+                ConsolePopoverHeader(
+                    eyebrow: "ROUTE",
+                    title: title,
+                    trailing: "\(options.count)"
+                )
 
                 if options.isEmpty {
-                    Text(emptyState.uppercased())
-                        .font(.system(size: 11, weight: .medium, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, minHeight: 100)
+                    ConsolePopoverEmptyState(message: emptyState)
                 } else {
                     ScrollView {
                         VStack(spacing: 6) {
                             ForEach(options) { option in
-                                Button {
+                                ConsoleRouteOptionRow(
+                                    title: option.title,
+                                    accent: accent,
+                                    isSelected: option.id == selectedID
+                                ) {
                                     onSelect(option.id)
                                     isPresented = false
-                                } label: {
-                                    HStack(spacing: 10) {
-                                        Circle()
-                                            .fill(option.id == selectedID ? accent : Color.black.opacity(0.18))
-                                            .frame(width: 8, height: 8)
-
-                                        Text(option.title.uppercased())
-                                            .font(.system(size: 11, weight: .medium, design: .monospaced))
-                                            .foregroundStyle(Color.black.opacity(0.78))
-                                            .frame(maxWidth: .infinity, alignment: .leading)
-                                    }
-                                    .padding(.horizontal, 10)
-                                    .padding(.vertical, 8)
-                                    .background(
-                                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                            .fill(option.id == selectedID ? accent.opacity(0.12) : Color.white.opacity(0.20))
-                                    )
                                 }
-                                .buttonStyle(.plain)
                             }
                         }
                     }
@@ -1699,8 +2453,248 @@ private struct ConsoleInlineRouteControl: View {
             }
             .padding(14)
             .frame(width: 300)
-            .background(AppTheme.panelGradient)
+            .background(
+                ZStack(alignment: .leading) {
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .fill(Color(hex: 0xF5F5F7))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                .strokeBorder(Color.black.opacity(0.09), lineWidth: 1)
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                .strokeBorder(Color.white.opacity(0.72), lineWidth: 1)
+                                .padding(0.5)
+                        )
+
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(accent.opacity(0.92))
+                        .frame(width: 4)
+                        .padding(.vertical, 12)
+                        .padding(.leading, 6)
+                }
+            )
+            .shadow(color: AppTheme.contactShadow.opacity(0.18), radius: 2, y: 1)
+            .shadow(color: AppTheme.hardShadow.opacity(0.24), radius: 12, y: 8)
         }
+    }
+}
+
+private struct ConsolePopoverHeader: View {
+    let eyebrow: String
+    let title: String
+    let trailing: String?
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(eyebrow)
+                    .font(.system(size: 9, weight: .bold, design: .monospaced))
+                    .foregroundStyle(Color.black.opacity(0.44))
+
+                Text(title.uppercased())
+                    .font(.system(size: 11, weight: .bold, design: .monospaced))
+                    .foregroundStyle(AppTheme.labelInk)
+            }
+
+            Spacer()
+
+            if let trailing, !trailing.isEmpty {
+                Text(trailing)
+                    .font(.system(size: 9, weight: .bold, design: .monospaced))
+                    .foregroundStyle(Color.black.opacity(0.58))
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 5)
+                    .background(
+                        Capsule(style: .continuous)
+                            .fill(Color(hex: 0xF0F0F2))
+                            .overlay(
+                                Capsule(style: .continuous)
+                                    .strokeBorder(Color.black.opacity(0.07), lineWidth: 1)
+                            )
+                    )
+            }
+        }
+        .padding(.bottom, 2)
+        .overlay(alignment: .bottom) {
+            Rectangle()
+                .fill(Color.black.opacity(0.08))
+                .frame(height: 1)
+                .overlay(alignment: .top) {
+                    Rectangle()
+                        .fill(Color.white.opacity(0.62))
+                        .frame(height: 1)
+                }
+                .offset(y: 6)
+        }
+        .padding(.bottom, 10)
+    }
+}
+
+private struct ConsolePopoverEmptyState: View {
+    let message: String
+
+    var body: some View {
+        HStack(spacing: 10) {
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill(Color.black.opacity(0.72))
+                .frame(width: 10, height: 10)
+
+            Text(message.uppercased())
+                .font(.system(size: 11, weight: .medium, design: .monospaced))
+                .foregroundStyle(Color.black.opacity(0.54))
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 12)
+        .frame(maxWidth: .infinity, minHeight: 96, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color(hex: 0xF2F2F4))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .strokeBorder(Color.black.opacity(0.06), lineWidth: 1)
+                )
+        )
+    }
+}
+
+private struct ConsoleRouteOptionRow: View {
+    let title: String
+    let accent: Color
+    let isSelected: Bool
+    let action: () -> Void
+
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 10) {
+                Capsule(style: .continuous)
+                    .fill(isSelected ? accent : Color.black.opacity(isHovered ? 0.24 : 0.18))
+                    .frame(width: 10, height: 6)
+
+                Text(title.uppercased())
+                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                    .foregroundStyle(Color.black.opacity(0.78))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                if isSelected {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(accent.opacity(0.92))
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 10)
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(backgroundFill)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .strokeBorder(borderColor, lineWidth: 1)
+                    )
+                    .shadow(color: shadowColor, radius: 3, y: 2)
+            )
+            .animation(.easeOut(duration: 0.14), value: isHovered)
+            .animation(.easeOut(duration: 0.14), value: isSelected)
+        }
+        .buttonStyle(ConsolePopoverRowButtonStyle())
+        .onHover { hovering in
+            isHovered = hovering
+        }
+    }
+
+    private var backgroundFill: Color {
+        if isSelected {
+            return accent.opacity(0.14)
+        }
+        return isHovered ? Color(hex: 0xEFEFF2) : Color(hex: 0xF7F7F8)
+    }
+
+    private var borderColor: Color {
+        if isSelected {
+            return Color.black.opacity(0.10)
+        }
+        return Color.black.opacity(isHovered ? 0.09 : 0.06)
+    }
+
+    private var shadowColor: Color {
+        isSelected || isHovered ? AppTheme.contactShadow.opacity(0.12) : .clear
+    }
+}
+
+private struct ConsoleCompactSliderRow: View {
+    let title: String
+    let valueText: String
+    @Binding var value: Double
+    let range: ClosedRange<Double>
+    let step: Double
+    let accent: Color
+    let compact: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: compact ? 5 : 6) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(title)
+                    .font(.system(size: compact ? 11 : 12, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(AppTheme.labelInk)
+                    .frame(width: compact ? 34 : 40, alignment: .leading)
+
+                Text(valueText.uppercased())
+                    .font(.system(size: compact ? 11 : 12, weight: .medium, design: .monospaced))
+                    .foregroundStyle(accent.opacity(0.82))
+                    .lineLimit(1)
+
+                Spacer(minLength: 0)
+            }
+
+            Slider(value: $value, in: range, step: step)
+                .tint(accent)
+                .controlSize(.small)
+                .padding(.vertical, compact ? 1 : 2)
+        }
+    }
+}
+
+private struct ConsoleCompactToggleRow: View {
+    let title: String
+    @Binding var isOn: Bool
+    let accent: Color
+    let compact: Bool
+    var onLabel: String = "ON"
+    var offLabel: String = "OFF"
+
+    var body: some View {
+        Button {
+            isOn.toggle()
+        } label: {
+            VStack(alignment: .leading, spacing: compact ? 5 : 6) {
+                Text(title)
+                    .font(.system(size: compact ? 11 : 12, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(AppTheme.labelInk)
+
+                HStack(spacing: 8) {
+                    Capsule(style: .continuous)
+                        .fill(isOn ? accent : Color.black.opacity(0.16))
+                        .frame(width: compact ? 24 : 28, height: compact ? 10 : 12)
+                        .overlay(alignment: isOn ? .trailing : .leading) {
+                            Circle()
+                                .fill(Color.white.opacity(0.96))
+                                .frame(width: compact ? 14 : 16, height: compact ? 14 : 16)
+                                .shadow(color: Color.black.opacity(0.18), radius: 1.5, y: 1)
+                        }
+
+                    Text((isOn ? onLabel : offLabel).uppercased())
+                        .font(.system(size: compact ? 11 : 12, weight: .medium, design: .monospaced))
+                        .foregroundStyle((isOn ? accent : Color.black).opacity(isOn ? 0.84 : 0.56))
+                        .lineLimit(1)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 }
 
@@ -1721,7 +2715,7 @@ private struct ConsolePatchMenuCard: View {
         Button {
             isPresented.toggle()
         } label: {
-            HStack(alignment: .top, spacing: 10) {
+            HStack(alignment: .top, spacing: compactHeight ? 8 : 10) {
                 VStack(alignment: .leading, spacing: compactHeight ? 3 : 5) {
                     Text(title)
                         .font(.system(size: compactHeight ? 9 : 10, weight: .semibold, design: .monospaced))
@@ -1736,7 +2730,7 @@ private struct ConsolePatchMenuCard: View {
                         .lineLimit(1)
                 }
 
-                Spacer(minLength: 8)
+                Spacer(minLength: compactHeight ? 6 : 8)
 
                 VStack(spacing: compactHeight ? 4 : 6) {
                     Text(actionLabel)
@@ -1746,7 +2740,7 @@ private struct ConsolePatchMenuCard: View {
                         .font(.system(size: compactHeight ? 10 : 11, weight: .bold))
                         .foregroundStyle((accent ?? Color.black).opacity(0.7))
                 }
-                .frame(width: compactHeight ? 42 : 48, height: compactHeight ? 36 : 44)
+                .frame(width: compactHeight ? 40 : 48, height: compactHeight ? 32 : 44)
                 .background(
                     RoundedRectangle(cornerRadius: 6, style: .continuous)
                         .fill((accent ?? Color.white).opacity(accent == nil ? 0.18 : 0.14))
@@ -1756,8 +2750,8 @@ private struct ConsolePatchMenuCard: View {
                         )
                 )
             }
-            .padding(.horizontal, compactHeight ? 10 : 12)
-            .padding(.vertical, compactHeight ? 8 : 10)
+            .padding(.horizontal, compactHeight ? 9 : 12)
+            .padding(.vertical, compactHeight ? 6 : 10)
             .frame(maxWidth: .infinity, alignment: .leading)
             .overlay(alignment: .bottom) {
                 Rectangle()
@@ -1769,72 +2763,27 @@ private struct ConsolePatchMenuCard: View {
         .buttonStyle(.plain)
         .popover(isPresented: $isPresented, arrowEdge: .trailing) {
             VStack(alignment: .leading, spacing: 10) {
-                HStack {
-                    Text(title)
-                        .font(.system(size: 11, weight: .bold, design: .monospaced))
-                        .foregroundStyle(AppTheme.labelInk)
-                    Spacer()
-                    Text("\(options.count)")
-                        .font(.system(size: 10, weight: .medium, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                }
+                ConsolePopoverHeader(
+                    eyebrow: "PATCH",
+                    title: title,
+                    trailing: "\(options.count)"
+                )
 
                 if options.isEmpty {
-                    Text(emptyState.uppercased())
-                        .font(.system(size: 11, weight: .medium, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, minHeight: 120, alignment: .center)
+                    ConsolePopoverEmptyState(message: emptyState)
                 } else {
                     ScrollView {
                         VStack(spacing: 8) {
                             ForEach(options) { option in
-                                Button {
+                                ConsolePatchOptionRow(
+                                    title: option.title,
+                                    subtitle: option.subtitle,
+                                    accent: accent ?? AppTheme.knobOrange,
+                                    isSelected: option.id == selectedID
+                                ) {
                                     onSelect(option.id)
                                     isPresented = false
-                                } label: {
-                                    HStack(alignment: .top, spacing: 10) {
-                                        ZStack {
-                                            Circle()
-                                                .fill(option.id == selectedID ? (accent ?? AppTheme.knobOrange).opacity(0.22) : Color.white.opacity(0.16))
-                                                .frame(width: 26, height: 26)
-                                            if option.id == selectedID {
-                                                Image(systemName: "checkmark")
-                                                    .font(.system(size: 10, weight: .bold))
-                                                    .foregroundStyle((accent ?? AppTheme.knobOrange).opacity(0.92))
-                                            } else {
-                                                Circle()
-                                                    .fill(Color.black.opacity(0.32))
-                                                    .frame(width: 7, height: 7)
-                                            }
-                                        }
-
-                                        VStack(alignment: .leading, spacing: 3) {
-                                            Text(option.title.uppercased())
-                                                .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                                                .foregroundStyle(Color.black.opacity(0.78))
-                                                .frame(maxWidth: .infinity, alignment: .leading)
-                                            if let subtitle = option.subtitle, !subtitle.isEmpty {
-                                                Text(subtitle)
-                                                    .font(.system(size: 10, weight: .medium, design: .rounded))
-                                                    .foregroundStyle(.secondary)
-                                                    .lineLimit(2)
-                                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                            }
-                                        }
-                                    }
-                                    .padding(.horizontal, 12)
-                                    .padding(.vertical, 10)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .background(
-                                        RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                            .fill(option.id == selectedID ? (accent ?? AppTheme.knobOrange).opacity(0.14) : Color.white.opacity(0.24))
-                                            .overlay(
-                                                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                                    .strokeBorder(Color.black.opacity(option.id == selectedID ? 0.10 : 0.06), lineWidth: 1)
-                                            )
-                                    )
                                 }
-                                .buttonStyle(.plain)
                             }
                         }
                         .padding(.vertical, 2)
@@ -1845,16 +2794,123 @@ private struct ConsolePatchMenuCard: View {
             .padding(14)
             .frame(width: 320)
             .background(
-                ZStack {
-                    AppTheme.panelGradient
-                    LinearGradient(
-                        colors: [Color.white.opacity(0.18), Color.clear],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
+                ZStack(alignment: .leading) {
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .fill(Color(hex: 0xF5F5F7))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                .strokeBorder(Color.black.opacity(0.09), lineWidth: 1)
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                .strokeBorder(Color.white.opacity(0.72), lineWidth: 1)
+                                .padding(0.5)
+                        )
+
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill((accent ?? AppTheme.knobOrange).opacity(0.92))
+                        .frame(width: 4)
+                        .padding(.vertical, 12)
+                        .padding(.leading, 6)
                 }
             )
+            .shadow(color: AppTheme.contactShadow.opacity(0.18), radius: 2, y: 1)
+            .shadow(color: AppTheme.hardShadow.opacity(0.24), radius: 12, y: 8)
         }
+    }
+}
+
+private struct ConsolePatchOptionRow: View {
+    let title: String
+    let subtitle: String?
+    let accent: Color
+    let isSelected: Bool
+    let action: () -> Void
+
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(alignment: .top, spacing: 10) {
+                ZStack {
+                    Circle()
+                        .fill(isSelected ? accent.opacity(0.22) : Color(hex: isHovered ? 0xEFEFF2 : 0xF7F7F8))
+                        .frame(width: 26, height: 26)
+                        .overlay(
+                            Circle()
+                                .strokeBorder(Color.black.opacity(isSelected ? 0.10 : (isHovered ? 0.08 : 0.05)), lineWidth: 1)
+                        )
+                    if isSelected {
+                        Image(systemName: "checkmark")
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundStyle(accent.opacity(0.92))
+                    } else {
+                        Circle()
+                            .fill(Color.black.opacity(0.32))
+                            .frame(width: 7, height: 7)
+                    }
+                }
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(title.uppercased())
+                        .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(Color.black.opacity(0.78))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    if let subtitle, !subtitle.isEmpty {
+                        Text(subtitle)
+                            .font(.system(size: 10, weight: .medium, design: .rounded))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(backgroundFill)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .strokeBorder(borderColor, lineWidth: 1)
+                    )
+                    .shadow(color: shadowColor, radius: 4, y: 2)
+            )
+            .animation(.easeOut(duration: 0.14), value: isHovered)
+            .animation(.easeOut(duration: 0.14), value: isSelected)
+        }
+        .buttonStyle(ConsolePopoverRowButtonStyle())
+        .onHover { hovering in
+            isHovered = hovering
+        }
+    }
+
+    private var backgroundFill: Color {
+        if isSelected {
+            return accent.opacity(0.14)
+        }
+        return isHovered ? Color(hex: 0xEFEFF2) : Color(hex: 0xF7F7F8)
+    }
+
+    private var borderColor: Color {
+        if isSelected {
+            return Color.black.opacity(0.10)
+        }
+        return Color.black.opacity(isHovered ? 0.09 : 0.06)
+    }
+
+    private var shadowColor: Color {
+        isSelected || isHovered ? AppTheme.contactShadow.opacity(0.12) : .clear
+    }
+}
+
+private struct ConsolePopoverRowButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 0.988 : 1)
+            .brightness(configuration.isPressed ? -0.01 : 0)
+            .animation(.spring(response: 0.18, dampingFraction: 0.86), value: configuration.isPressed)
     }
 }
 
@@ -2234,6 +3290,163 @@ private struct ConsoleCapsuleButtonStyle: ButtonStyle {
             )
             .shadow(color: Color.black.opacity(configuration.isPressed ? 0.06 : 0.16), radius: configuration.isPressed ? 1 : 3, y: configuration.isPressed ? 1 : 3)
             .offset(y: configuration.isPressed ? 1.5 : 0)
+    }
+}
+
+private struct FAQDocumentSheet: View {
+    @Environment(\.dismiss) private var dismiss
+
+    let sourceLabel: String
+    let markdown: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("UPSTREAM FAQ")
+                        .font(.system(size: 11, weight: .bold, design: .monospaced))
+                        .foregroundStyle(Color.secondary)
+                    Text(sourceLabel)
+                        .font(.system(size: 13, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(Color.primary)
+                }
+                Spacer()
+                Button("Close") {
+                    dismiss()
+                }
+                .keyboardShortcut(.cancelAction)
+            }
+
+            ScrollView {
+                Text(renderedContent)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .textSelection(.enabled)
+            }
+        }
+        .padding(20)
+        .frame(minWidth: 720, idealWidth: 840, minHeight: 520, idealHeight: 640)
+    }
+
+    private var renderedContent: AttributedString {
+        if let attributed = try? AttributedString(markdown: markdown) {
+            return attributed
+        }
+        return AttributedString(markdown)
+    }
+}
+
+private struct AssetReportSheet: View {
+    @Environment(\.dismiss) private var dismiss
+
+    @ObservedObject var viewModel: AssetAuditViewModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("ASSET REPORT")
+                        .font(.system(size: 11, weight: .bold, design: .monospaced))
+                        .foregroundStyle(Color.secondary)
+                    Text(summaryLine)
+                        .font(.system(size: 13, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(Color.primary)
+                }
+                Spacer()
+                Button(viewModel.isChecking ? "Checking..." : "Check") {
+                    Task { await viewModel.refreshReport() }
+                }
+                .disabled(viewModel.isChecking || viewModel.isDownloading)
+                Button(viewModel.isDownloading ? "Downloading..." : "Download") {
+                    Task { await viewModel.downloadAssets() }
+                }
+                .disabled(viewModel.isChecking || viewModel.isDownloading)
+                Button("Close") {
+                    dismiss()
+                }
+                .keyboardShortcut(.cancelAction)
+            }
+
+            if let errorMessage = viewModel.errorMessage {
+                Text(errorMessage)
+                    .font(.system(size: 12, weight: .medium, design: .monospaced))
+                    .foregroundStyle(Color.red)
+            } else if let message = viewModel.report?.message {
+                Text(message)
+                    .font(.system(size: 12, weight: .medium, design: .monospaced))
+                    .foregroundStyle(Color.secondary)
+            }
+
+            ScrollView {
+                if viewModel.items.isEmpty {
+                    Text("No asset report available yet. Run CHECK to query the backend.")
+                        .font(.system(size: 12, weight: .medium, design: .monospaced))
+                        .foregroundStyle(Color.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.vertical, 12)
+                } else {
+                    VStack(alignment: .leading, spacing: 10) {
+                        ForEach(viewModel.items) { item in
+                            VStack(alignment: .leading, spacing: 4) {
+                                HStack {
+                                    Text(item.title.uppercased())
+                                        .font(.system(size: 11, weight: .bold, design: .monospaced))
+                                    Spacer()
+                                    Text(item.status.label)
+                                        .font(.system(size: 10, weight: .bold, design: .monospaced))
+                                        .foregroundStyle(statusColor(for: item.status))
+                                }
+
+                                Text(item.path)
+                                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                                    .foregroundStyle(Color.primary.opacity(0.82))
+                                    .textSelection(.enabled)
+
+                                Text(item.note)
+                                    .font(.system(size: 11, weight: .regular, design: .rounded))
+                                    .foregroundStyle(Color.secondary)
+
+                                if let expectedHash = item.expectedHash {
+                                    Text("Expected: \(expectedHash)")
+                                        .font(.system(size: 10, weight: .medium, design: .monospaced))
+                                        .foregroundStyle(Color.secondary)
+                                        .textSelection(.enabled)
+                                }
+
+                                if let actualHash = item.actualHash {
+                                    Text("Actual:   \(actualHash)")
+                                        .font(.system(size: 10, weight: .medium, design: .monospaced))
+                                        .foregroundStyle(Color.secondary)
+                                        .textSelection(.enabled)
+                                }
+                            }
+                            .padding(12)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(
+                                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                    .fill(Color(NSColor.controlBackgroundColor))
+                            )
+                        }
+                    }
+                }
+            }
+        }
+        .padding(20)
+        .frame(minWidth: 700, idealWidth: 820, minHeight: 480, idealHeight: 620)
+    }
+
+    private var summaryLine: String {
+        let items = viewModel.items
+        let okCount = items.filter(\.isHealthy).count
+        return "\(okCount)/\(items.count) tracked assets verified"
+    }
+
+    private func statusColor(for status: AssetIntegrityStatus) -> Color {
+        switch status {
+        case .ok:
+            return .green
+        case .missing, .mismatch, .error:
+            return .red
+        }
     }
 }
 

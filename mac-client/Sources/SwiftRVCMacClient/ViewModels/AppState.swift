@@ -18,6 +18,7 @@ final class AppState: ObservableObject {
     @Published var toast: AppToast?
     @Published var selectedModelSizeLabel = "—"
     @Published var selectedIndexSizeLabel = "—"
+    @Published var selectedSpeakerCount = 0
     @Published var appMemoryLabel = "—"
     @Published var engineMemoryLabel = "—"
 
@@ -27,6 +28,10 @@ final class AppState: ObservableObject {
     var inferenceViewModel: InferenceViewModel
     var batchViewModel: BatchViewModel
     var realtimeViewModel: RealtimeViewModel
+    var uvrViewModel: UVRViewModel
+    var assetAuditViewModel: AssetAuditViewModel
+    var onnxViewModel: ONNXViewModel
+    var checkpointToolsViewModel: CheckpointToolsViewModel
 
     private let bridgeClient: RVCBridgeClient
     private var hasBootstrapped = false
@@ -50,8 +55,14 @@ final class AppState: ObservableObject {
         self.inferenceViewModel = InferenceViewModel(bridgeClient: bridgeClient, audioPlayer: audioPlayer)
         self.batchViewModel = BatchViewModel(bridgeClient: bridgeClient)
         self.realtimeViewModel = RealtimeViewModel(bridgeClient: bridgeClient)
+        self.uvrViewModel = UVRViewModel(bridgeClient: bridgeClient)
+        self.assetAuditViewModel = AssetAuditViewModel(bridgeClient: bridgeClient)
+        self.onnxViewModel = ONNXViewModel(bridgeClient: bridgeClient)
+        self.checkpointToolsViewModel = CheckpointToolsViewModel(bridgeClient: bridgeClient)
 
         batchViewModel.outputDirectoryURL = environment.defaultBatchOutputDirectory
+        uvrViewModel.vocalOutputDirectoryURL = environment.defaultBatchOutputDirectory.appendingPathComponent("uvr-vocals", isDirectory: true)
+        uvrViewModel.instrumentalOutputDirectoryURL = environment.defaultBatchOutputDirectory.appendingPathComponent("uvr-instrumentals", isDirectory: true)
 
         inferenceViewModel.$lastRunSummary
             .compactMap { $0 }
@@ -69,6 +80,38 @@ final class AppState: ObservableObject {
             }
             .store(in: &cancellables)
 
+        uvrViewModel.$lastRunSummary
+            .compactMap { $0 }
+            .sink { [weak self] summary in
+                self?.lastExecutionSummary = summary
+                self?.presentToast(message: summary, style: .success)
+            }
+            .store(in: &cancellables)
+
+        assetAuditViewModel.$lastRunSummary
+            .compactMap { $0 }
+            .sink { [weak self] summary in
+                self?.statusMessage = summary
+                self?.presentToast(message: summary, style: .info)
+            }
+            .store(in: &cancellables)
+
+        onnxViewModel.$lastRunSummary
+            .compactMap { $0 }
+            .sink { [weak self] summary in
+                self?.lastExecutionSummary = summary
+                self?.presentToast(message: summary, style: .success)
+            }
+            .store(in: &cancellables)
+
+        checkpointToolsViewModel.$lastRunSummary
+            .compactMap { $0 }
+            .sink { [weak self] summary in
+                self?.lastExecutionSummary = summary
+                self?.presentToast(message: summary, style: .success)
+            }
+            .store(in: &cancellables)
+
         inferenceViewModel.$errorMessage
             .compactMap { $0 }
             .sink { [weak self] message in
@@ -78,6 +121,38 @@ final class AppState: ObservableObject {
             .store(in: &cancellables)
 
         batchViewModel.$errorMessage
+            .compactMap { $0 }
+            .sink { [weak self] message in
+                self?.statusMessage = message
+                self?.presentToast(message: message, style: .error)
+            }
+            .store(in: &cancellables)
+
+        uvrViewModel.$errorMessage
+            .compactMap { $0 }
+            .sink { [weak self] message in
+                self?.statusMessage = message
+                self?.presentToast(message: message, style: .error)
+            }
+            .store(in: &cancellables)
+
+        assetAuditViewModel.$errorMessage
+            .compactMap { $0 }
+            .sink { [weak self] message in
+                self?.statusMessage = message
+                self?.presentToast(message: message, style: .error)
+            }
+            .store(in: &cancellables)
+
+        onnxViewModel.$errorMessage
+            .compactMap { $0 }
+            .sink { [weak self] message in
+                self?.statusMessage = message
+                self?.presentToast(message: message, style: .error)
+            }
+            .store(in: &cancellables)
+
+        checkpointToolsViewModel.$errorMessage
             .compactMap { $0 }
             .sink { [weak self] message in
                 self?.statusMessage = message
@@ -114,6 +189,10 @@ final class AppState: ObservableObject {
 
     var availablePortDescription: String {
         engineController.port.map(String.init) ?? "—"
+    }
+
+    var effectiveSelectedIndexPath: String? {
+        inferenceViewModel.effectiveIndexPath
     }
 
     func performInitialBootstrap() async {
@@ -168,11 +247,38 @@ final class AppState: ObservableObject {
             indexPaths = catalog.indexPaths
             inferenceViewModel.ensureSelectedIndexAvailable(indexPaths)
             batchViewModel.ensureSelectedIndexAvailable(indexPaths)
+            try await uvrViewModel.refreshModels()
             statusMessage = L10n.tr("status.catalog.loaded", models.count, indexPaths.count)
             presentToast(message: statusMessage, style: .success)
         } catch {
             statusMessage = error.localizedDescription
             presentToast(message: error.localizedDescription, style: .error)
+        }
+    }
+
+    func selectSharedIndexPath(_ path: String?) {
+        inferenceViewModel.customIndexURL = nil
+        batchViewModel.customIndexURL = nil
+        inferenceViewModel.selectedIndexPath = path
+        batchViewModel.selectedIndexPath = path
+    }
+
+    func setSharedCustomIndexURL(_ url: URL) {
+        inferenceViewModel.customIndexURL = url
+        batchViewModel.customIndexURL = url
+        inferenceViewModel.selectedIndexPath = url.path
+        batchViewModel.selectedIndexPath = url.path
+    }
+
+    func clearSharedCustomIndexURL() {
+        let currentCustomPath = inferenceViewModel.customIndexURL?.path ?? batchViewModel.customIndexURL?.path
+        inferenceViewModel.customIndexURL = nil
+        batchViewModel.customIndexURL = nil
+        if inferenceViewModel.selectedIndexPath == currentCustomPath {
+            inferenceViewModel.selectedIndexPath = nil
+        }
+        if batchViewModel.selectedIndexPath == currentCustomPath {
+            batchViewModel.selectedIndexPath = nil
         }
     }
 
@@ -187,10 +293,20 @@ final class AppState: ObservableObject {
         }
     }
 
+    func refreshUVRModels() async {
+        guard engineController.state == .ready else { return }
+        do {
+            try await uvrViewModel.refreshModels()
+        } catch {
+            statusMessage = error.localizedDescription
+            presentToast(message: error.localizedDescription, style: .error)
+        }
+    }
+
     func startRealtime() async {
         await realtimeViewModel.start(
             selectedModelName: selectedModelName,
-            selectedIndexPath: inferenceViewModel.selectedIndexPath,
+            selectedIndexPath: effectiveSelectedIndexPath,
             inferenceViewModel: inferenceViewModel
         )
         await refreshRealtimeContext()
@@ -204,7 +320,7 @@ final class AppState: ObservableObject {
     func applyRealtimeConfiguration() async {
         await realtimeViewModel.configure(
             selectedModelName: selectedModelName,
-            selectedIndexPath: inferenceViewModel.selectedIndexPath,
+            selectedIndexPath: effectiveSelectedIndexPath,
             inferenceViewModel: inferenceViewModel
         )
     }
@@ -216,28 +332,63 @@ final class AppState: ObservableObject {
             let result = try await bridgeClient.selectModel(name: name)
             selectedModelName = result.modelName
             modelInfoSummary = result.modelInfoSummary.isEmpty ? L10n.tr("models.no_info") : result.modelInfoSummary
+            selectedSpeakerCount = result.speakerCount
             if !result.indexPaths.isEmpty {
                 indexPaths = result.indexPaths
             }
-            if let indexMatch = indexPaths.first(where: { $0.localizedCaseInsensitiveContains(name.replacingOccurrences(of: ".pth", with: "")) }) {
-                inferenceViewModel.selectedIndexPath = indexMatch
-                batchViewModel.selectedIndexPath = indexMatch
-            } else {
-                inferenceViewModel.ensureSelectedIndexAvailable(indexPaths)
-                batchViewModel.ensureSelectedIndexAvailable(indexPaths)
+            clearSharedCustomIndexURL()
+            inferenceViewModel.speakerID = 0
+            batchViewModel.speakerID = 0
+            let normalizedModelName = name.replacingOccurrences(of: ".pth", with: "")
+            let indexMatch = indexPaths.first {
+                $0.localizedCaseInsensitiveContains(normalizedModelName)
             }
-            if let selectedIndex = inferenceViewModel.selectedIndexPath,
-               let modelIndex = models.firstIndex(where: { $0.name == name }) {
-                models[modelIndex].indexPath = selectedIndex
+
+            selectSharedIndexPath(indexMatch)
+
+            if let modelIndex = models.firstIndex(where: { $0.name == name }) {
+                models[modelIndex].indexPath = indexMatch ?? ""
                 models[modelIndex].infoSummary = modelInfoSummary
+                models[modelIndex].speakerCount = result.speakerCount
             }
             statusMessage = L10n.tr("status.model.loaded", name)
             presentToast(message: statusMessage, style: .success)
             await realtimeViewModel.configure(
                 selectedModelName: selectedModelName,
-                selectedIndexPath: inferenceViewModel.selectedIndexPath,
+                selectedIndexPath: effectiveSelectedIndexPath,
                 inferenceViewModel: inferenceViewModel
             )
+        } catch {
+            statusMessage = error.localizedDescription
+            presentToast(message: error.localizedDescription, style: .error)
+        }
+    }
+
+    func unloadModel() async {
+        guard engineController.state == .ready else {
+            statusMessage = L10n.tr("status.engine.refresh_first")
+            presentToast(message: statusMessage, style: .info)
+            return
+        }
+
+        do {
+            let result = try await bridgeClient.unloadModel()
+            selectedModelName = nil
+            modelInfoSummary = L10n.tr("status.model_info.initial")
+            indexPaths = result.indexPaths
+            selectedSpeakerCount = result.speakerCount
+            selectedModelSizeLabel = "—"
+            selectedIndexSizeLabel = "—"
+            inferenceViewModel.selectedIndexPath = nil
+            inferenceViewModel.customIndexURL = nil
+            inferenceViewModel.f0FileURL = nil
+            inferenceViewModel.speakerID = 0
+            batchViewModel.selectedIndexPath = nil
+            batchViewModel.customIndexURL = nil
+            batchViewModel.speakerID = 0
+            statusMessage = result.unloaded ? "Model unloaded." : "Model unload returned no-op."
+            presentToast(message: statusMessage, style: .info)
+            await refreshRealtimeContext()
         } catch {
             statusMessage = error.localizedDescription
             presentToast(message: error.localizedDescription, style: .error)
@@ -304,7 +455,7 @@ final class AppState: ObservableObject {
             guard let self else { return }
             while !Task.isCancelled {
                 let selectedModelName = self.selectedModelName
-                let selectedIndexPath = self.inferenceViewModel.selectedIndexPath
+                let selectedIndexPath = self.effectiveSelectedIndexPath
                 let weightsDirectory = self.environment.weightsDirectory
                 let enginePID = self.engineController.processIdentifier
 

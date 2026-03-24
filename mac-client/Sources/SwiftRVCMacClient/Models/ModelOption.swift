@@ -5,4 +5,5 @@ struct ModelOption: Codable, Hashable, Identifiable {
     let name: String
     var indexPath: String
     var infoSummary: String
+    var speakerCount: Int
 }

@@ -4,6 +4,8 @@ import Foundation
 final class InferenceViewModel: ObservableObject {
     @Published var inputFileURL: URL?
     @Published var selectedIndexPath: String?
+    @Published var customIndexURL: URL?
+    @Published var speakerID: Int = 0
     @Published var transpose: Double = 0
     @Published var f0Method: F0Method = .rmvpe
     @Published var indexRate: Double = 0.75
@@ -11,6 +13,7 @@ final class InferenceViewModel: ObservableObject {
     @Published var resampleSR: Double = 0
     @Published var rmsMixRate: Double = 0.25
     @Published var protect: Double = 0.33
+    @Published var f0FileURL: URL?
     @Published var isRunning = false
     @Published var outputMessage = ""
     @Published var outputAudioURL: URL?
@@ -20,18 +23,29 @@ final class InferenceViewModel: ObservableObject {
     private let bridgeClient: RVCBridgeClient
     private let audioPlayer: AudioPreviewPlayer
 
+    /// Creates the inference view model around the bridge and local audio preview helper.
     init(bridgeClient: RVCBridgeClient, audioPlayer: AudioPreviewPlayer) {
         self.bridgeClient = bridgeClient
         self.audioPlayer = audioPlayer
     }
 
+    /// Returns the effective index path, preferring a custom override when one is active.
+    var effectiveIndexPath: String? {
+        customIndexURL?.path ?? selectedIndexPath
+    }
+
+    /// Clears the selected index when the currently chosen path is no longer available in the catalog.
     func ensureSelectedIndexAvailable(_ indexPaths: [String]) {
+        if customIndexURL != nil {
+            return
+        }
         if let selectedIndexPath, indexPaths.contains(selectedIndexPath) {
             return
         }
-        selectedIndexPath = indexPaths.first
+        selectedIndexPath = nil
     }
 
+    /// Validates local state, serializes the request, and dispatches a single-file conversion.
     func convert(selectedModelName: String?) async {
         errorMessage = nil
         outputMessage = ""
@@ -49,15 +63,17 @@ final class InferenceViewModel: ObservableObject {
         let request = SingleInferenceRequest(
             modelName: selectedModelName,
             inputFileURL: inputFileURL,
+            speakerID: speakerID,
             transpose: transpose,
             f0Method: f0Method,
             indexPath: selectedIndexPath,
+            customIndexURL: customIndexURL,
             indexRate: indexRate,
             filterRadius: filterRadius,
             resampleSR: resampleSR,
             rmsMixRate: rmsMixRate,
             protect: protect,
-            f0FileURL: nil
+            f0FileURL: f0FileURL
         )
 
         do {

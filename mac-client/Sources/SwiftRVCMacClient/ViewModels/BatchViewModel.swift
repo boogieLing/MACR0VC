@@ -7,6 +7,8 @@ final class BatchViewModel: ObservableObject {
     @Published var inputFileURLs: [URL] = []
     @Published var outputDirectoryURL: URL?
     @Published var selectedIndexPath: String?
+    @Published var customIndexURL: URL?
+    @Published var speakerID: Int = 0
     @Published var transpose: Double = 0
     @Published var f0Method: F0Method = .rmvpe
     @Published var indexRate: Double = 1
@@ -22,17 +24,28 @@ final class BatchViewModel: ObservableObject {
 
     private let bridgeClient: RVCBridgeClient
 
+    /// Creates the batch view model around the bridge client.
     init(bridgeClient: RVCBridgeClient) {
         self.bridgeClient = bridgeClient
     }
 
+    /// Returns the effective index path, preferring a custom override when one is active.
+    var effectiveIndexPath: String? {
+        customIndexURL?.path ?? selectedIndexPath
+    }
+
+    /// Clears the selected index when the currently chosen path is no longer available in the catalog.
     func ensureSelectedIndexAvailable(_ indexPaths: [String]) {
+        if customIndexURL != nil {
+            return
+        }
         if let selectedIndexPath, indexPaths.contains(selectedIndexPath) {
             return
         }
-        selectedIndexPath = indexPaths.first
+        selectedIndexPath = nil
     }
 
+    /// Validates local state, serializes the request, and dispatches a batch conversion.
     func convert(selectedModelName: String?) async {
         errorMessage = nil
         outputMessage = ""
@@ -53,9 +66,11 @@ final class BatchViewModel: ObservableObject {
             inputFileURLs: inputFileURLs,
             outputDirectoryURL: outputDirectoryURL,
             format: format,
+            speakerID: speakerID,
             transpose: transpose,
             f0Method: f0Method,
             indexPath: selectedIndexPath,
+            customIndexURL: customIndexURL,
             indexRate: indexRate,
             filterRadius: filterRadius,
             resampleSR: resampleSR,
@@ -81,6 +96,7 @@ final class BatchViewModel: ObservableObject {
         isRunning = false
     }
 
+    /// Opens the selected output directory in Finder.
     func openOutputDirectory() {
         guard let outputDirectoryURL else { return }
         NSWorkspace.shared.open(outputDirectoryURL)
