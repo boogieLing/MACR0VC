@@ -13,6 +13,7 @@ enum AppTheme {
     static let liftShadow = Color.black.opacity(0.18)
     static let hardShadow = Color.black.opacity(0.26)
     static let labelInk = Color(hex: 0x66676B)
+    static let valueInk = Color(hex: 0x4E5259)
 
     static let knobBlue = Color(hex: 0x1E3246)
     static let knobOchre = Color(hex: 0xB59257)

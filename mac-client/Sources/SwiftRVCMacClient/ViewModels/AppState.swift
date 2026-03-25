@@ -40,6 +40,15 @@ final class AppState: ObservableObject {
     private var toastDismissTask: Task<Void, Never>?
     private var metricsTask: Task<Void, Never>?
 
+    private func sanitizedModelInfoSummary(_ raw: String) -> String {
+        let summary = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !summary.isEmpty else { return "" }
+        if summary.contains("Traceback (most recent call last):") {
+            return ""
+        }
+        return summary
+    }
+
     init(environment: AppEnvironment) {
         self.environment = environment
 
@@ -243,7 +252,11 @@ final class AppState: ObservableObject {
 
         do {
             let catalog = try await bridgeClient.refreshModels()
-            models = catalog.models
+            models = catalog.models.map { model in
+                var sanitized = model
+                sanitized.infoSummary = sanitizedModelInfoSummary(model.infoSummary)
+                return sanitized
+            }
             indexPaths = catalog.indexPaths
             inferenceViewModel.ensureSelectedIndexAvailable(indexPaths)
             batchViewModel.ensureSelectedIndexAvailable(indexPaths)
@@ -330,8 +343,9 @@ final class AppState: ObservableObject {
 
         do {
             let result = try await bridgeClient.selectModel(name: name)
+            let sanitizedSummary = sanitizedModelInfoSummary(result.modelInfoSummary)
             selectedModelName = result.modelName
-            modelInfoSummary = result.modelInfoSummary.isEmpty ? L10n.tr("models.no_info") : result.modelInfoSummary
+            modelInfoSummary = sanitizedSummary.isEmpty ? L10n.tr("models.no_info") : sanitizedSummary
             selectedSpeakerCount = result.speakerCount
             if !result.indexPaths.isEmpty {
                 indexPaths = result.indexPaths
@@ -348,11 +362,17 @@ final class AppState: ObservableObject {
 
             if let modelIndex = models.firstIndex(where: { $0.name == name }) {
                 models[modelIndex].indexPath = indexMatch ?? ""
-                models[modelIndex].infoSummary = modelInfoSummary
+                models[modelIndex].infoSummary = sanitizedSummary
                 models[modelIndex].speakerCount = result.speakerCount
             }
-            statusMessage = L10n.tr("status.model.loaded", name)
-            presentToast(message: statusMessage, style: .success)
+            if let modelInfoError = result.modelInfoError?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !modelInfoError.isEmpty {
+                statusMessage = "Model loaded, but metadata inspection failed: \(modelInfoError)"
+                presentToast(message: statusMessage, style: .error)
+            } else {
+                statusMessage = L10n.tr("status.model.loaded", name)
+                presentToast(message: statusMessage, style: .success)
+            }
             await realtimeViewModel.configure(
                 selectedModelName: selectedModelName,
                 selectedIndexPath: effectiveSelectedIndexPath,

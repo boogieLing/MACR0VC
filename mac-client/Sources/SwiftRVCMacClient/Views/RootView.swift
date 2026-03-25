@@ -1016,7 +1016,7 @@ private struct ConsoleDeck: View {
             let tightDeck = proxy.size.height < 760
             let contentHeight = max(proxy.size.height - (tightDeck ? 36 : 44), 420)
             let actionPadWidth = compactDeck ? 308.0 : 560.0
-            let monitorHeight = min(max(contentHeight * (tightDeck ? 0.10 : (shortDeck ? 0.16 : 0.20)), tightDeck ? 92 : 132), shortDeck ? 154 : 198)
+            let monitorHeight = min(max(contentHeight * (tightDeck ? 0.17 : (shortDeck ? 0.38 : 0.45)), tightDeck ? 132 : 244), shortDeck ? 292 : 384)
             let faderModuleHeight = min(max(contentHeight * (tightDeck ? 0.36 : (shortDeck ? 0.46 : 0.52)), tightDeck ? 214 : 288), shortDeck ? 336 : 428)
             let trackHeight = min(max(faderModuleHeight - (tightDeck ? 56 : 98), tightDeck ? 110 : 148), shortDeck ? 188 : 232)
             let faderWidth = max(
@@ -1027,7 +1027,7 @@ private struct ConsoleDeck: View {
                 )
             )
 
-            VStack(spacing: tightDeck ? 8 : 12) {
+            VStack(spacing: tightDeck ? 4 : 6) {
                 encoderRow(compact: compactTopBar)
                 divider
                 utilityStrip(compact: compactDeck, tightHeight: tightDeck)
@@ -1040,7 +1040,8 @@ private struct ConsoleDeck: View {
                     tightHeight: tightDeck,
                     actionPadWidth: actionPadWidth
                 )
-                    .frame(height: faderModuleHeight, alignment: .bottom)
+                    .padding(.top, tightDeck ? 6 : 18)
+                    .frame(height: faderModuleHeight, alignment: .top)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .padding(.top, tightDeck ? 0 : (compactDeck ? 28 : 34))
@@ -1116,10 +1117,10 @@ private struct ConsoleDeck: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             } else {
                 HStack(spacing: 14) {
-                    routingHostControl
-                    routingInputControl
-                    routingOutputControl
-                    routingMonitorControl
+                    routingHostControl.frame(maxWidth: .infinity, alignment: .leading)
+                    routingInputControl.frame(maxWidth: .infinity, alignment: .leading)
+                    routingOutputControl.frame(maxWidth: .infinity, alignment: .leading)
+                    routingMonitorControl.frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
@@ -1157,52 +1158,7 @@ private struct ConsoleDeck: View {
     }
 
     private func utilityStrip(compact: Bool, tightHeight: Bool) -> some View {
-        let readouts = utilityReadouts
-
-        return VStack(alignment: .leading, spacing: tightHeight ? 2 : 4) {
-            HStack(spacing: tightHeight ? 12 : 18) {
-                ForEach(readouts.indices, id: \.self) { index in
-                    Text(readouts[index].label)
-                        .font(.system(size: 10, weight: .medium, design: .monospaced))
-                        .foregroundStyle(AppTheme.labelInk)
-                        .lineLimit(1)
-                        .frame(minWidth: tightHeight ? 72 : 84, maxWidth: .infinity, alignment: .leading)
-                }
-                Spacer(minLength: 0)
-            }
-
-            HStack(alignment: .firstTextBaseline, spacing: tightHeight ? 12 : 18) {
-                ForEach(readouts.indices, id: \.self) { index in
-                    Text(readouts[index].value)
-                        .font(.system(size: 11, weight: .medium, design: .monospaced))
-                        .foregroundStyle((readouts[index].accent ?? Color.black).opacity(readouts[index].accent == nil ? 0.62 : 0.78))
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.72)
-                        .frame(minWidth: tightHeight ? 72 : 84, maxWidth: .infinity, alignment: .leading)
-                }
-                Spacer(minLength: 0)
-            }
-        }
-    }
-
-    private var utilityReadouts: [(label: String, value: String, accent: Color?)] {
-        [
-            (
-                "MODEL",
-                selectedModelName?.replacingOccurrences(of: ".pth", with: "").uppercased() ?? "NONE",
-                selectedModelName == nil ? nil : AppTheme.knobOrange
-            ),
-            ("STATE", engineController.state.label.uppercased(), nil),
-            (
-                "INDEX",
-                inferenceViewModel.customIndexURL?.lastPathComponent ?? inferenceViewModel.selectedIndexPath.map(lastPath) ?? "AUTO",
-                inferenceViewModel.customIndexURL != nil ? AppTheme.knobBlue : (inferenceViewModel.selectedIndexPath == nil ? nil : AppTheme.knobOchre)
-            ),
-            ("BANK", parameterBank.title.uppercased(), parameterBank == .single ? AppTheme.knobOrange : AppTheme.knobBlue),
-            ("RATE", realtimeViewModel.sampleRate > 0 ? "\(realtimeViewModel.sampleRate)" : "—", nil),
-            ("DELAY", "\(realtimeViewModel.delayTimeMs)MS", realtimeViewModel.isRunning ? AppTheme.knobOrange : nil),
-            ("INFER", "\(realtimeViewModel.inferTimeMs)MS", realtimeViewModel.isRunning ? AppTheme.knobBlue : nil),
-        ]
+        EmptyView()
     }
 
     private func monitorPanel(compact: Bool, tightHeight: Bool, panelHeight: CGFloat) -> some View {
@@ -1237,7 +1193,7 @@ private struct ConsoleDeck: View {
                         HStack(alignment: .top, spacing: 16) {
                             ConsoleWaveformView()
                                 .frame(maxWidth: .infinity)
-                                .frame(height: 132)
+                                .frame(height: 198)
 
                             monitorSummaryGrid(compact: false)
                                 .frame(width: 286, alignment: .leading)
@@ -1425,15 +1381,13 @@ private struct ConsoleDeck: View {
 
     private func faderModule(trackHeight: CGFloat, faderWidth: CGFloat, compact: Bool, veryCompact: Bool, tightHeight: Bool, actionPadWidth: CGFloat) -> some View {
         VStack(spacing: 0) {
-            Spacer(minLength: 0)
-
-            HStack(alignment: .bottom, spacing: compact ? 8 : 12) {
+            HStack(alignment: .top, spacing: compact ? 8 : 12) {
                 deckActionPad(compact: compact, tight: tightHeight, width: actionPadWidth)
                     .frame(width: actionPadWidth, alignment: .leading)
                 faderStack(trackHeight: trackHeight, faderWidth: faderWidth, compact: compact, tightHeight: tightHeight)
             }
         }
-        .frame(maxHeight: .infinity, alignment: .bottom)
+        .frame(maxHeight: .infinity, alignment: .top)
         .clipped()
     }
 
@@ -1447,11 +1401,7 @@ private struct ConsoleDeck: View {
             return Array(contextActions[start..<end])
         }
         return VStack(alignment: .leading, spacing: tight ? 5 : 7) {
-            Spacer(minLength: 0)
-
             patchSidecar(compact: compact)
-
-            Spacer(minLength: tight ? 2 : (compact ? 8 : 4))
 
             Group {
                 if !compact && !tight {
@@ -1483,7 +1433,7 @@ private struct ConsoleDeck: View {
             }
             .frame(width: compact ? width : actionGridWidth, alignment: .leading)
         }
-        .frame(maxHeight: .infinity, alignment: .bottomLeading)
+        .frame(maxHeight: .infinity, alignment: .topLeading)
         .padding(.bottom, tight ? 2 : 4)
     }
 
@@ -1513,8 +1463,6 @@ private struct ConsoleDeck: View {
 
     private func faderStack(trackHeight: CGFloat, faderWidth: CGFloat, compact: Bool, tightHeight: Bool) -> some View {
         VStack(alignment: .leading, spacing: tightHeight ? 4 : 10) {
-            Spacer(minLength: tightHeight ? 16 : 28)
-
             HStack(alignment: .bottom, spacing: compact ? max(6, faderWidth * 0.08) : max(16, faderWidth * 0.14)) {
                 if !compact {
                     Spacer(minLength: 0)
@@ -1526,7 +1474,7 @@ private struct ConsoleDeck: View {
                     Spacer(minLength: 0)
                 }
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+            .frame(maxWidth: .infinity, alignment: .top)
         }
     }
 
@@ -2070,7 +2018,7 @@ private struct ConsoleFader: View {
             }
         }
         .frame(width: width)
-        .frame(maxHeight: .infinity, alignment: .bottom)
+        .frame(maxHeight: .infinity, alignment: .top)
         .opacity(spec.isInteractive ? 1 : 0.8)
     }
 
@@ -2401,8 +2349,9 @@ private struct ConsoleInlineRouteControl: View {
                 HStack(spacing: 8) {
                     Text(value.uppercased())
                         .font(.system(size: compactHeight ? 10 : 11, weight: .medium, design: .monospaced))
-                        .foregroundStyle(accent.opacity(0.82))
+                        .foregroundStyle(AppTheme.valueInk)
                         .lineLimit(1)
+                        .minimumScaleFactor(compactHeight ? 0.84 : 0.9)
                     Spacer(minLength: 8)
                     Image(systemName: "chevron.down")
                         .font(.system(size: compactHeight ? 9 : 10, weight: .bold))
@@ -2419,7 +2368,7 @@ private struct ConsoleInlineRouteControl: View {
                             .offset(y: -1)
                     }
             }
-            .frame(width: compactHeight ? 112 : 132, alignment: .leading)
+            .frame(minWidth: compactHeight ? 112 : 132, maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -2643,7 +2592,7 @@ private struct ConsoleCompactSliderRow: View {
 
                 Text(valueText.uppercased())
                     .font(.system(size: compact ? 11 : 12, weight: .medium, design: .monospaced))
-                    .foregroundStyle(accent.opacity(0.82))
+                    .foregroundStyle(AppTheme.valueInk)
                     .lineLimit(1)
 
                 Spacer(minLength: 0)
@@ -2651,6 +2600,7 @@ private struct ConsoleCompactSliderRow: View {
 
             Slider(value: $value, in: range, step: step)
                 .tint(accent)
+                .colorMultiply(AppTheme.labelInk.opacity(0.92))
                 .controlSize(.small)
                 .padding(.vertical, compact ? 1 : 2)
         }
@@ -2722,11 +2672,11 @@ private struct ConsolePatchMenuCard: View {
                         .foregroundStyle(AppTheme.labelInk)
                     Text(value.uppercased())
                         .font(.system(size: compactHeight ? 11 : 12, weight: .semibold, design: .rounded))
-                        .foregroundStyle((accent ?? Color.black).opacity(accent == nil ? 0.72 : 0.82))
+                        .foregroundStyle(AppTheme.valueInk)
                         .lineLimit(1)
                     Text(detail.uppercased())
                         .font(.system(size: compactHeight ? 8 : 9, weight: .medium, design: .monospaced))
-                        .foregroundStyle(.secondary.opacity(0.8))
+                        .foregroundStyle(AppTheme.labelInk.opacity(0.82))
                         .lineLimit(1)
                 }
 
@@ -2859,7 +2809,7 @@ private struct ConsolePatchOptionRow: View {
                     if let subtitle, !subtitle.isEmpty {
                         Text(subtitle)
                             .font(.system(size: 10, weight: .medium, design: .rounded))
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(AppTheme.labelInk.opacity(0.82))
                             .lineLimit(2)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
@@ -2932,11 +2882,11 @@ private struct ConsolePatchActionCard: View {
                         .foregroundStyle(AppTheme.labelInk)
                     Text(value.uppercased())
                         .font(.system(size: compactHeight ? 11 : 12, weight: .semibold, design: .rounded))
-                        .foregroundStyle((accent ?? Color.black).opacity(accent == nil ? 0.72 : 0.82))
+                        .foregroundStyle(AppTheme.valueInk)
                         .lineLimit(1)
                     Text(detail.uppercased())
                         .font(.system(size: compactHeight ? 8 : 9, weight: .medium, design: .monospaced))
-                        .foregroundStyle(.secondary.opacity(0.8))
+                        .foregroundStyle(AppTheme.labelInk.opacity(0.82))
                         .lineLimit(1)
                 }
 

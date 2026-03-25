@@ -28,6 +28,7 @@ struct ModelCatalog: Codable {
 struct ModelSelectionResult: Codable {
     let modelName: String
     let modelInfoSummary: String
+    let modelInfoError: String?
     let indexPaths: [String]
     let speakerCount: Int
 }

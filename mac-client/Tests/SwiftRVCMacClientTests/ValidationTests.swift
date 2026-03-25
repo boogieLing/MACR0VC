@@ -2,6 +2,28 @@ import XCTest
 @testable import SwiftRVCMacClient
 
 final class ValidationTests: XCTestCase {
+    func testModelCatalogDecodesWhenSpeakerCountIsMissingFromCatalogEntries() throws {
+        let payload = """
+        {
+          "speakerCount": 0,
+          "models": [
+            {
+              "name": "demo.pth",
+              "indexPath": "",
+              "infoSummary": ""
+            }
+          ],
+          "indexPaths": []
+        }
+        """.data(using: .utf8)!
+
+        let catalog = try JSONDecoder().decode(ModelCatalog.self, from: payload)
+
+        XCTAssertEqual(catalog.models.count, 1)
+        XCTAssertEqual(catalog.models.first?.name, "demo.pth")
+        XCTAssertEqual(catalog.models.first?.speakerCount, 0)
+    }
+
     func testSingleInferenceEncodingUsesSpeakerIdKey() throws {
         let request = SingleInferenceRequest(
             modelName: "demo.pth",
