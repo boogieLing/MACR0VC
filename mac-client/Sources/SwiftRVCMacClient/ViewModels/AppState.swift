@@ -3,6 +3,29 @@ import Foundation
 import AppKit
 import Darwin
 
+enum BusyScope: Hashable {
+    case bootstrap
+    case catalogRefresh
+    case modelSelection
+
+    var priority: Int {
+        switch self {
+        case .bootstrap:
+            return 3
+        case .modelSelection:
+            return 2
+        case .catalogRefresh:
+            return 1
+        }
+    }
+}
+
+struct BusyDescriptor: Equatable {
+    let scope: BusyScope
+    let message: String
+    let priority: Int
+}
+
 @MainActor
 final class AppState: ObservableObject {
     @Published var navigation: NavigationDestination = .singleConvert
@@ -15,6 +38,7 @@ final class AppState: ObservableObject {
     @Published var isRefreshingModels = false
     @Published var isNavigating = false
     @Published var isBootstrapping = false
+    @Published private(set) var activeBusyDescriptor: BusyDescriptor?
     @Published var toast: AppToast?
     @Published var selectedModelSizeLabel = "—"
     @Published var selectedIndexSizeLabel = "—"
@@ -39,7 +63,9 @@ final class AppState: ObservableObject {
     private var navigationResetTask: Task<Void, Never>?
     private var toastDismissTask: Task<Void, Never>?
     private var metricsTask: Task<Void, Never>?
+    private var busyDescriptors: [BusyScope: BusyDescriptor] = [:]
 
+    /// 清洗后端返回的模型摘要，过滤空白内容和 traceback 噪音。
     private func sanitizedModelInfoSummary(_ raw: String) -> String {
         let summary = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !summary.isEmpty else { return "" }
@@ -49,25 +75,32 @@ final class AppState: ObservableObject {
         return summary
     }
 
-    init(environment: AppEnvironment) {
+    /// 构建应用级状态容器，并允许测试注入轻量依赖替身。
+    init(
+        environment: AppEnvironment,
+        engineController: EngineController? = nil,
+        audioPlayer: AudioPreviewPlayer? = nil,
+        bridgeClient: RVCBridgeClient? = nil,
+        startMetricsTask: Bool = true
+    ) {
         self.environment = environment
 
-        let engineController = EngineController(environment: environment)
-        let audioPlayer = AudioPreviewPlayer()
-        let bridgeClient = PythonRVCBridgeClient(environment: environment) {
-            engineController.baseURL
+        let resolvedEngineController = engineController ?? EngineController(environment: environment)
+        let resolvedAudioPlayer = audioPlayer ?? AudioPreviewPlayer()
+        let resolvedBridgeClient = bridgeClient ?? PythonRVCBridgeClient(environment: environment) {
+            resolvedEngineController.baseURL
         }
 
-        self.engineController = engineController
-        self.audioPlayer = audioPlayer
-        self.bridgeClient = bridgeClient
-        self.inferenceViewModel = InferenceViewModel(bridgeClient: bridgeClient, audioPlayer: audioPlayer)
-        self.batchViewModel = BatchViewModel(bridgeClient: bridgeClient)
-        self.realtimeViewModel = RealtimeViewModel(bridgeClient: bridgeClient)
-        self.uvrViewModel = UVRViewModel(bridgeClient: bridgeClient)
-        self.assetAuditViewModel = AssetAuditViewModel(bridgeClient: bridgeClient)
-        self.onnxViewModel = ONNXViewModel(bridgeClient: bridgeClient)
-        self.checkpointToolsViewModel = CheckpointToolsViewModel(bridgeClient: bridgeClient)
+        self.engineController = resolvedEngineController
+        self.audioPlayer = resolvedAudioPlayer
+        self.bridgeClient = resolvedBridgeClient
+        self.inferenceViewModel = InferenceViewModel(bridgeClient: resolvedBridgeClient, audioPlayer: resolvedAudioPlayer)
+        self.batchViewModel = BatchViewModel(bridgeClient: resolvedBridgeClient)
+        self.realtimeViewModel = RealtimeViewModel(bridgeClient: resolvedBridgeClient)
+        self.uvrViewModel = UVRViewModel(bridgeClient: resolvedBridgeClient)
+        self.assetAuditViewModel = AssetAuditViewModel(bridgeClient: resolvedBridgeClient)
+        self.onnxViewModel = ONNXViewModel(bridgeClient: resolvedBridgeClient)
+        self.checkpointToolsViewModel = CheckpointToolsViewModel(bridgeClient: resolvedBridgeClient)
 
         batchViewModel.outputDirectoryURL = environment.defaultBatchOutputDirectory
         uvrViewModel.vocalOutputDirectoryURL = environment.defaultBatchOutputDirectory.appendingPathComponent("uvr-vocals", isDirectory: true)
@@ -185,7 +218,7 @@ final class AppState: ObservableObject {
             }
             .store(in: &cancellables)
 
-        engineController.$lastError
+        resolvedEngineController.$lastError
             .compactMap { $0 }
             .sink { [weak self] message in
                 self?.statusMessage = message
@@ -193,7 +226,9 @@ final class AppState: ObservableObject {
             }
             .store(in: &cancellables)
 
-        startMetricsPolling()
+        if startMetricsTask {
+            startMetricsPolling()
+        }
     }
 
     var availablePortDescription: String {
@@ -204,14 +239,52 @@ final class AppState: ObservableObject {
         inferenceViewModel.effectiveIndexPath
     }
 
+    var isBusy: Bool {
+        activeBusyDescriptor != nil
+    }
+
+    var isBootstrapBusy: Bool {
+        busyDescriptors[.bootstrap] != nil
+    }
+
+    var isCatalogBusy: Bool {
+        busyDescriptors[.catalogRefresh] != nil
+    }
+
+    var isModelSelectionBusy: Bool {
+        busyDescriptors[.modelSelection] != nil
+    }
+
+    var modelSelectionBusyMessage: String? {
+        busyDescriptors[.modelSelection]?.message
+    }
+
+    /// 进入统一等待态，并按优先级刷新当前展示中的忙碌文案。
+    func beginBusy(_ scope: BusyScope, modelName: String? = nil) {
+        busyDescriptors[scope] = BusyDescriptor(
+            scope: scope,
+            message: busyMessage(for: scope, modelName: modelName),
+            priority: scope.priority
+        )
+        synchronizeBusyDescriptor()
+    }
+
+    /// 结束指定等待态，并在多等待源并存时恢复到剩余的最高优先级提示。
+    func endBusy(_ scope: BusyScope) {
+        busyDescriptors.removeValue(forKey: scope)
+        synchronizeBusyDescriptor()
+    }
+
+    /// 执行首次启动自举流程，并保证启动等待态覆盖整个初始化链路。
     func performInitialBootstrap() async {
         guard !hasBootstrapped else { return }
         hasBootstrapped = true
-        isBootstrapping = true
+        beginBusy(.bootstrap)
+        defer { endBusy(.bootstrap) }
         await startEngine()
-        isBootstrapping = false
     }
 
+    /// 启动本地引擎，并在成功后刷新模型目录和实时上下文。
     func startEngine() async {
         statusMessage = L10n.tr("status.engine.starting")
         await engineController.start()
@@ -223,6 +296,7 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// 重启本地引擎，并在成功后重新同步模型和实时状态。
     func restartEngine() async {
         statusMessage = L10n.tr("status.engine.restart")
         await engineController.restart()
@@ -234,12 +308,14 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// 停止本地引擎并广播已停止状态。
     func stopEngine() {
         engineController.stop()
         statusMessage = L10n.tr("status.engine.stopped")
         presentToast(message: statusMessage, style: .info)
     }
 
+    /// 刷新模型与索引目录，并在非自举阶段独立维护目录刷新等待态。
     func refreshModels() async {
         guard engineController.state == .ready else {
             statusMessage = L10n.tr("status.engine.refresh_first")
@@ -247,8 +323,17 @@ final class AppState: ObservableObject {
             return
         }
 
+        let managesCatalogBusy = !isBootstrapping
+        if managesCatalogBusy {
+            beginBusy(.catalogRefresh)
+        }
         isRefreshingModels = true
-        defer { isRefreshingModels = false }
+        defer {
+            isRefreshingModels = false
+            if managesCatalogBusy {
+                endBusy(.catalogRefresh)
+            }
+        }
 
         do {
             let catalog = try await bridgeClient.refreshModels()
@@ -269,6 +354,7 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// 将同一个索引路径同步给单文件和批处理两个推理面板。
     func selectSharedIndexPath(_ path: String?) {
         inferenceViewModel.customIndexURL = nil
         batchViewModel.customIndexURL = nil
@@ -276,6 +362,7 @@ final class AppState: ObservableObject {
         batchViewModel.selectedIndexPath = path
     }
 
+    /// 设置共享自定义索引文件，并覆盖两个推理面板的当前索引来源。
     func setSharedCustomIndexURL(_ url: URL) {
         inferenceViewModel.customIndexURL = url
         batchViewModel.customIndexURL = url
@@ -283,6 +370,7 @@ final class AppState: ObservableObject {
         batchViewModel.selectedIndexPath = url.path
     }
 
+    /// 清空共享自定义索引文件，并回退仍指向该文件的索引选择状态。
     func clearSharedCustomIndexURL() {
         let currentCustomPath = inferenceViewModel.customIndexURL?.path ?? batchViewModel.customIndexURL?.path
         inferenceViewModel.customIndexURL = nil
@@ -295,6 +383,7 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// 从后端重新拉取实时设备和运行状态。
     func refreshRealtimeContext() async {
         guard engineController.state == .ready else { return }
         do {
@@ -306,6 +395,7 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// 刷新 UVR 模型目录，供 UVR 面板下拉框使用。
     func refreshUVRModels() async {
         guard engineController.state == .ready else { return }
         do {
@@ -316,6 +406,7 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// 使用当前模型和索引启动实时变声链路。
     func startRealtime() async {
         await realtimeViewModel.start(
             selectedModelName: selectedModelName,
@@ -325,11 +416,13 @@ final class AppState: ObservableObject {
         await refreshRealtimeContext()
     }
 
+    /// 停止实时变声链路，并刷新后端状态快照。
     func stopRealtime() async {
         await realtimeViewModel.stop()
         await refreshRealtimeContext()
     }
 
+    /// 将当前实时参数重新推送到运行中的实时链路。
     func applyRealtimeConfiguration() async {
         await realtimeViewModel.configure(
             selectedModelName: selectedModelName,
@@ -338,8 +431,12 @@ final class AppState: ObservableObject {
         )
     }
 
+    /// 切换当前模型，并让等待态持续到实时配置同步结束为止。
     func selectModel(_ name: String) async {
         guard !name.isEmpty else { return }
+
+        beginBusy(.modelSelection, modelName: name)
+        defer { endBusy(.modelSelection) }
 
         do {
             let result = try await bridgeClient.selectModel(name: name)
@@ -384,6 +481,7 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// 卸载当前模型，并清空与模型相关的本地派生状态。
     func unloadModel() async {
         guard engineController.state == .ready else {
             statusMessage = L10n.tr("status.engine.refresh_first")
@@ -415,6 +513,7 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// 切换当前页面，并短暂标记导航过渡状态。
     func navigate(to destination: NavigationDestination) {
         guard navigation != destination else { return }
         navigation = destination
@@ -427,14 +526,17 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// 打开模型权重目录。
     func openWeightsDirectory() {
         openDirectory(environment.weightsDirectory, label: L10n.tr("status.folder.model_weights"))
     }
 
+    /// 打开索引文件目录。
     func openIndicesDirectory() {
         openDirectory(environment.indicesDirectory, label: L10n.tr("status.folder.index_files"))
     }
 
+    /// 确保目录存在后在 Finder 中打开，并反馈结果 toast。
     private func openDirectory(_ directoryURL: URL, label: String) {
         do {
             try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
@@ -448,12 +550,14 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// 立即关闭当前 toast，并取消自动消失任务。
     func dismissToast() {
         toastDismissTask?.cancel()
         toastDismissTask = nil
         toast = nil
     }
 
+    /// 展示一条新的 toast，并启动自动消失计时。
     func presentToast(message: String, style: AppToast.Style) {
         toastDismissTask?.cancel()
         toast = AppToast(message: message, style: style)
@@ -469,6 +573,7 @@ final class AppState: ObservableObject {
         metricsTask?.cancel()
     }
 
+    /// 周期轮询应用、引擎、模型和索引的体积标签。
     private func startMetricsPolling() {
         metricsTask?.cancel()
         metricsTask = Task { [weak self] in
@@ -498,6 +603,7 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// 读取当前 app 进程的驻留内存大小。
     private static func currentAppResidentBytes() -> UInt64? {
         var info = mach_task_basic_info()
         var count = mach_msg_type_number_t(MemoryLayout<mach_task_basic_info_data_t>.size / MemoryLayout<integer_t>.size)
@@ -511,6 +617,7 @@ final class AppState: ObservableObject {
         return UInt64(info.resident_size)
     }
 
+    /// 通过 `ps` 查询指定进程的驻留内存大小。
     private static func processResidentBytes(pid: Int32?) async -> UInt64? {
         guard let pid else { return nil }
         return await Task.detached(priority: .utility) {
@@ -536,6 +643,7 @@ final class AppState: ObservableObject {
         }.value
     }
 
+    /// 异步读取单个文件的体积。
     private static func fileSizeBytes(at url: URL?) async -> UInt64? {
         guard let url else { return nil }
         return await Task.detached(priority: .utility) {
@@ -545,6 +653,7 @@ final class AppState: ObservableObject {
         }.value
     }
 
+    /// 将字节数格式化为适合 UI 展示的容量标签。
     private static func byteLabel(_ bytes: UInt64?) -> String {
         guard let bytes, bytes > 0 else { return "—" }
         let formatter = ByteCountFormatter()
@@ -553,5 +662,33 @@ final class AppState: ObservableObject {
         formatter.includesUnit = true
         formatter.isAdaptive = true
         return formatter.string(fromByteCount: Int64(bytes))
+    }
+
+    /// 将所有活跃等待态压缩成当前界面真正应该展示的那一个。
+    private func synchronizeBusyDescriptor() {
+        activeBusyDescriptor = busyDescriptors.values.max { lhs, rhs in
+            lhs.priority < rhs.priority
+        }
+        isBootstrapping = busyDescriptors[.bootstrap] != nil
+    }
+
+    /// 为每种等待态生成统一文案，避免不同视图各自拼接提示文本。
+    private func busyMessage(for scope: BusyScope, modelName: String?) -> String {
+        switch scope {
+        case .bootstrap:
+            return L10n.tr("label.shell_loading")
+        case .catalogRefresh:
+            return L10n.tr("status.catalog.loading")
+        case .modelSelection:
+            return L10n.tr("status.model.loading", displayedModelName(from: modelName))
+        }
+    }
+
+    /// 将模型文件名裁剪成更适合等待提示展示的短标签。
+    private func displayedModelName(from rawName: String?) -> String {
+        guard let rawName, !rawName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return L10n.tr("picker.select_model")
+        }
+        return rawName.replacingOccurrences(of: ".pth", with: "")
     }
 }

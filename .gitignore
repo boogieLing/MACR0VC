@@ -1,6 +1,5 @@
-r0/request/
-r0-submit/
-r0-work/
+r0/
+r0-*/
 .DS_Store
 *.pyc
 __pycache__/
@@ -15,5 +14,3 @@ engine/logs/
 engine/opt/
 engine/.env
 dist/
-
-r0-review/

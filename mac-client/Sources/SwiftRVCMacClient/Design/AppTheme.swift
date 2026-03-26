@@ -21,6 +21,11 @@ enum AppTheme {
     static let knobOrange = Color(hex: 0xE84A1B)
     static let knobWhite = Color(hex: 0xF0F0F2)
     static let ledGreen = Color(hex: 0x4AF626)
+    static let busyTrack = Color(hex: 0x090B10)
+    static let busyGlowIndigo = Color(hex: 0x231557)
+    static let busyGlowViolet = Color(hex: 0x44107A)
+    static let busyGlowPink = Color(hex: 0xFF1361)
+    static let busyGlowYellow = Color(hex: 0xFFF800)
 
     static let highlight = Color.white.opacity(0.92)
     static let shadowColor = Color.black.opacity(0.22)

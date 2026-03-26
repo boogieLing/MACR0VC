@@ -18,7 +18,9 @@
 "status.engine.restarted" = "Engine restarted on port %@.";
 "status.engine.stopped" = "Engine stopped.";
 "status.engine.refresh_first" = "Start the engine before refreshing models.";
+"status.catalog.loading" = "Refreshing model catalog…";
 "status.catalog.loaded" = "Loaded %d model(s) and %d index file(s).";
+"status.model.loading" = "Loading model %@…";
 "status.model.loaded" = "Loaded model %@.";
 "status.folder.opened" = "Opened %@ folder.";
 "status.folder.failed" = "Unable to open %@ folder: %@";

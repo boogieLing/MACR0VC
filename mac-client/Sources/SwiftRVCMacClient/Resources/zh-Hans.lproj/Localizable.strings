@@ -18,7 +18,9 @@
 "status.engine.restarted" = "引擎已重启，端口 %@。";
 "status.engine.stopped" = "引擎已停止。";
 "status.engine.refresh_first" = "请先启动引擎，再刷新模型目录。";
+"status.catalog.loading" = "正在刷新模型目录…";
 "status.catalog.loaded" = "已加载 %d 个模型和 %d 个索引文件。";
+"status.model.loading" = "正在加载模型 %@…";
 "status.model.loaded" = "已加载模型 %@。";
 "status.folder.opened" = "已打开%@目录。";
 "status.folder.failed" = "无法打开%@目录：%@";

@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct UVRSheet: View {
+    @Environment(\.dismiss) private var dismiss
     @ObservedObject var viewModel: UVRViewModel
 
     let onChooseInputDirectory: () -> Void
@@ -11,8 +12,15 @@ struct UVRSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("UVR")
-                .font(.system(size: 18, weight: .bold, design: .monospaced))
+            HStack {
+                Text("UVR")
+                    .font(.system(size: 18, weight: .bold, design: .monospaced))
+                Spacer()
+                Button("Close") {
+                    dismiss()
+                }
+                .keyboardShortcut(.cancelAction)
+            }
 
             Picker("Model", selection: Binding(
                 get: { viewModel.selectedModelName ?? "" },

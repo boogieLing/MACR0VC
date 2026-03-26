@@ -31,6 +31,32 @@ struct RootView: View {
                 .fill(Color.white.opacity(0.55))
                 .frame(height: 1)
         }
+        .overlay(alignment: .top) {
+            if let busyDescriptor = appState.activeBusyDescriptor {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(busyDescriptor.message)
+                        .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(Color.black.opacity(0.72))
+                        .lineLimit(1)
+
+                    BusyFluorescentBarView(style: .global)
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 12)
+                .frame(width: 320, alignment: .leading)
+                .background(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .fill(Color.white.opacity(0.78))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                .strokeBorder(Color.white.opacity(0.64), lineWidth: 1)
+                        )
+                )
+                .shadow(color: Color.black.opacity(0.14), radius: 18, y: 8)
+                .padding(.top, 14)
+                .transition(.move(edge: .top).combined(with: .opacity))
+            }
+        }
         .overlay(alignment: .bottom) {
             Rectangle()
                 .fill(Color.black.opacity(0.08))
@@ -140,6 +166,7 @@ struct RootView: View {
         .background(WindowChromeConfigurator())
     }
 
+    /// 组装左右双栏的主控制台壳层。
     private func shellContent(proxy: GeometryProxy, railWidth: CGFloat, contentHeight: CGFloat) -> some View {
         HStack(spacing: 0) {
             ConsoleLeftRail(
@@ -156,6 +183,10 @@ struct RootView: View {
                 modelsCount: appState.models.count,
                 statusMessage: appState.statusMessage,
                 lastExecutionSummary: appState.lastExecutionSummary,
+                isBootstrapBusy: appState.isBootstrapBusy,
+                isCatalogBusy: appState.isCatalogBusy,
+                isModelSelectionBusy: appState.isModelSelectionBusy,
+                modelSelectionBusyMessage: appState.modelSelectionBusyMessage,
                 onSelectModel: { model in
                     Task { await appState.selectModel(model) }
                 },
@@ -191,6 +222,9 @@ struct RootView: View {
                 appMemoryLabel: appState.appMemoryLabel,
                 engineMemoryLabel: appState.engineMemoryLabel,
                 isNavigating: appState.isNavigating,
+                isBootstrapBusy: appState.isBootstrapBusy,
+                isCatalogBusy: appState.isCatalogBusy,
+                isModelSelectionBusy: appState.isModelSelectionBusy,
                 onSelectParameterBank: { bank in
                     parameterBank = bank
                 },
@@ -201,6 +235,7 @@ struct RootView: View {
         .frame(width: proxy.size.width, height: contentHeight, alignment: .topLeading)
     }
 
+    /// 仅在实时链路运行中时，同步滑杆和开关改动。
     private func syncRealtimeControlsIfNeeded() {
         guard appState.realtimeViewModel.isRunning else { return }
         Task { await appState.applyRealtimeConfiguration() }
@@ -229,6 +264,7 @@ struct RootView: View {
         }
     }
 
+    /// 将控制台按钮动作路由到对应的状态更新或文件面板。
     private func handleContextAction(_ action: ConsoleContextAction) {
         switch action {
         case .startEngine:
@@ -294,6 +330,7 @@ struct RootView: View {
         }
     }
 
+    /// 选择单文件推理输入音频。
     private func chooseAudioFile() {
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.audio]
@@ -305,6 +342,7 @@ struct RootView: View {
         }
     }
 
+    /// 选择批处理输入目录。
     private func chooseBatchInputDirectory() {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
@@ -316,6 +354,7 @@ struct RootView: View {
         }
     }
 
+    /// 选择批处理输入文件集合。
     private func chooseBatchInputFiles() {
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.audio]
@@ -328,6 +367,7 @@ struct RootView: View {
         }
     }
 
+    /// 选择批处理输出目录。
     private func chooseBatchOutputDirectory() {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
@@ -338,6 +378,7 @@ struct RootView: View {
         }
     }
 
+    /// 选择 UVR 输入目录。
     private func chooseUVRInputDirectory() {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
@@ -349,6 +390,7 @@ struct RootView: View {
         }
     }
 
+    /// 选择 UVR 输入文件集合。
     private func chooseUVRInputFiles() {
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.audio]
@@ -361,6 +403,7 @@ struct RootView: View {
         }
     }
 
+    /// 选择 UVR 人声输出目录。
     private func chooseUVRVocalOutputDirectory() {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
@@ -371,6 +414,7 @@ struct RootView: View {
         }
     }
 
+    /// 选择 UVR 伴奏输出目录。
     private func chooseUVRInstrumentalOutputDirectory() {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
@@ -381,6 +425,7 @@ struct RootView: View {
         }
     }
 
+    /// 根据当前选模预填 ONNX 导出源文件和目标文件。
     private func prepareONNXExportDefaults() {
         if appState.onnxViewModel.modelFileURL == nil, let selectedModelName = appState.selectedModelName {
             let candidate = appState.environment.engineRoot
@@ -397,6 +442,7 @@ struct RootView: View {
         }
     }
 
+    /// 选择待导出的 ONNX 源模型文件。
     private func chooseONNXModelFile() {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = false
@@ -416,6 +462,7 @@ struct RootView: View {
         }
     }
 
+    /// 选择 ONNX 导出目标文件路径。
     private func chooseONNXExportFile() {
         let panel = NSSavePanel()
         panel.allowedContentTypes = [UTType(filenameExtension: "onnx") ?? .data]
@@ -428,6 +475,7 @@ struct RootView: View {
         }
     }
 
+    /// 选择 checkpoint 工具面板的目标模型文件。
     private func chooseCheckpointModelFile() {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = false
@@ -446,6 +494,7 @@ struct RootView: View {
         }
     }
 
+    /// 选择 merge 工具中的 A 模型。
     private func chooseMergeModelAFile() {
         if let url = chooseCheckpointLikeFile() {
             appState.checkpointToolsViewModel.mergeModelAURL = url
@@ -455,6 +504,7 @@ struct RootView: View {
         }
     }
 
+    /// 选择 merge 工具中的 B 模型。
     private func chooseMergeModelBFile() {
         if let url = chooseCheckpointLikeFile() {
             appState.checkpointToolsViewModel.mergeModelBURL = url
@@ -464,6 +514,7 @@ struct RootView: View {
         }
     }
 
+    /// 选择提取小模型的源 checkpoint。
     private func chooseExtractModelFile() {
         if let url = chooseCheckpointLikeFile() {
             appState.checkpointToolsViewModel.extractModelURL = url
@@ -473,6 +524,7 @@ struct RootView: View {
         }
     }
 
+    /// 打开通用的 checkpoint 文件选择面板。
     private func chooseCheckpointLikeFile() -> URL? {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = false
@@ -486,6 +538,7 @@ struct RootView: View {
         return panel.runModal() == .OK ? panel.url : nil
     }
 
+    /// 选择自定义索引文件并同步到推理视图。
     private func chooseCustomIndexFile() {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = false
@@ -502,10 +555,12 @@ struct RootView: View {
         }
     }
 
+    /// 清空当前自定义索引文件。
     private func clearCustomIndexFile() {
         appState.clearSharedCustomIndexURL()
     }
 
+    /// 选择单文件推理的 F0 曲线文件。
     private func chooseF0CurveFile() {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = false
@@ -517,10 +572,12 @@ struct RootView: View {
         }
     }
 
+    /// 清空当前 F0 曲线文件。
     private func clearF0CurveFile() {
         appState.inferenceViewModel.f0FileURL = nil
     }
 
+    /// 优先按当前语言加载 FAQ 文档，失败时展示兜底说明。
     private func showFAQSheet() {
         let prefersChinese = Locale.preferredLanguages.first?.lowercased().hasPrefix("zh") == true
         let candidates: [(label: String, url: URL)] = prefersChinese
@@ -637,6 +694,7 @@ private struct ConsoleControlSpec: Identifiable {
     let isInteractive: Bool
     let formatter: (Double) -> String
 
+    /// 用当前 formatter 渲染控制项值。
     func displayValue() -> String {
         formatter(value.wrappedValue)
     }
@@ -656,6 +714,10 @@ private struct ConsoleLeftRail: View {
     let modelsCount: Int
     let statusMessage: String
     let lastExecutionSummary: String
+    let isBootstrapBusy: Bool
+    let isCatalogBusy: Bool
+    let isModelSelectionBusy: Bool
+    let modelSelectionBusyMessage: String?
     let onSelectModel: (String) -> Void
     let onSelectIndexPath: (String) -> Void
     let onSelectParameterBank: (ConsoleParameterBank) -> Void
@@ -731,8 +793,21 @@ private struct ConsoleLeftRail: View {
                     selectedID: selectedModelName,
                     emptyState: "No models loaded",
                     compactHeight: true,
+                    isEnabled: !isModelPickerDisabled,
                     onSelect: onSelectModel
                 )
+
+                if isModelSelectionBusy, let modelSelectionBusyMessage {
+                    VStack(alignment: .leading, spacing: 6) {
+                        BusyFluorescentBarView(style: .inline)
+                        Text(modelSelectionBusyMessage)
+                            .font(.system(size: 9, weight: .medium, design: .monospaced))
+                            .foregroundStyle(AppTheme.labelInk.opacity(0.86))
+                            .lineLimit(1)
+                    }
+                    .padding(.horizontal, 2)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+                }
 
                 ConsolePatchMenuCard(
                     title: "SPEAKER ID",
@@ -746,6 +821,7 @@ private struct ConsoleLeftRail: View {
                     selectedID: "\(min(inferenceViewModel.speakerID, max(selectedSpeakerCount - 1, 0)))",
                     emptyState: "Speaker 0",
                     compactHeight: true,
+                    isEnabled: true,
                     onSelect: { speakerID in
                         guard let parsedSpeakerID = Int(speakerID) else { return }
                         inferenceViewModel.speakerID = parsedSpeakerID
@@ -765,6 +841,7 @@ private struct ConsoleLeftRail: View {
                     selectedID: inferenceViewModel.f0Method.rawValue,
                     emptyState: "No F0 methods available",
                     compactHeight: true,
+                    isEnabled: true,
                     onSelect: { methodID in
                         guard let method = F0Method(rawValue: methodID) else { return }
                         inferenceViewModel.f0Method = method
@@ -777,6 +854,11 @@ private struct ConsoleLeftRail: View {
         .padding(.top, 2)
     }
 
+    private var isModelPickerDisabled: Bool {
+        isBootstrapBusy || isCatalogBusy || isModelSelectionBusy
+    }
+
+    /// 渲染左侧实时参数机架。
     private func realtimeLabRack(compact: Bool, tight: Bool) -> some View {
         VStack(alignment: .leading, spacing: tight ? 8 : 10) {
             Text("REALTIME LAB")
@@ -799,6 +881,7 @@ private struct ConsoleLeftRail: View {
                     selectedID: realtimeViewModel.sampleRateMode.rawValue,
                     emptyState: "No sample rate modes available",
                     compactHeight: true,
+                    isEnabled: true,
                     onSelect: { modeID in
                         guard let mode = SampleRateMode(rawValue: modeID) else { return }
                         realtimeViewModel.sampleRateMode = mode
@@ -943,10 +1026,12 @@ private struct ConsoleLeftRail: View {
         }
     }
 
+    /// 将实时参数格式化为两位小数。
     private func decimalString(_ value: Double) -> String {
         value.formatted(.number.precision(.fractionLength(2)))
     }
 
+    /// 在实时模式运行中推送当前参数改动。
     private func pushRealtimeConfigIfNeeded() {
         guard realtimeViewModel.isRunning else { return }
         Task {
@@ -981,6 +1066,7 @@ private struct ConsoleLeftRail: View {
         return "NONE"
     }
 
+    /// 提取路径最后一级，避免监视面板显示完整绝对路径。
     private func lastPath(_ path: String) -> String {
         (path as NSString).lastPathComponent
     }
@@ -1004,6 +1090,9 @@ private struct ConsoleDeck: View {
     let appMemoryLabel: String
     let engineMemoryLabel: String
     let isNavigating: Bool
+    let isBootstrapBusy: Bool
+    let isCatalogBusy: Bool
+    let isModelSelectionBusy: Bool
     let onSelectParameterBank: (ConsoleParameterBank) -> Void
     let onContextAction: (ConsoleContextAction) -> Void
 
@@ -1051,6 +1140,7 @@ private struct ConsoleDeck: View {
         }
     }
 
+    /// 渲染顶部路由条、动作旋钮和主输出旋钮。
     private func encoderRow(compact: Bool) -> some View {
         Group {
             if compact {
@@ -1105,6 +1195,7 @@ private struct ConsoleDeck: View {
         }
     }
 
+    /// 渲染顶部的 host、input、output、monitor 路由条。
     private func topRouteStrip(compact: Bool) -> some View {
         return Group {
             if compact {
@@ -1129,16 +1220,20 @@ private struct ConsoleDeck: View {
 
     private var topActionItems: [ConsoleActionItem] {
         [
-            ConsoleActionItem(id: "boot", title: "BOOT", systemImage: "bolt.fill", action: .startEngine, isEnabled: engineController.state != .ready && engineController.state != .starting, accent: AppTheme.knobBlue),
-            ConsoleActionItem(id: "sync", title: "SYNC", systemImage: "arrow.clockwise", action: .refreshModels, isEnabled: engineController.state == .ready, accent: AppTheme.knobOchre),
+            ConsoleActionItem(id: "boot", title: "BOOT", systemImage: "bolt.fill", action: .startEngine, isEnabled: engineController.state != .ready && engineController.state != .starting && !isTopTransportBusy, accent: AppTheme.knobBlue),
+            ConsoleActionItem(id: "sync", title: "SYNC", systemImage: "arrow.clockwise", action: .refreshModels, isEnabled: engineController.state == .ready && !isTopTransportBusy, accent: AppTheme.knobOchre),
             ConsoleActionItem(id: "uvr", title: "UVR", systemImage: "waveform.badge.magnifyingglass", action: .showUVR, isEnabled: engineController.state == .ready, accent: AppTheme.knobOrange),
             ConsoleActionItem(id: "onnx", title: "ONNX", systemImage: "point.3.connected.trianglepath.dotted", action: .showONNX, isEnabled: engineController.state == .ready, accent: AppTheme.knobBlue),
             ConsoleActionItem(id: "ckpt", title: "CKPT", systemImage: "cpu", action: .showCheckpointTools, isEnabled: engineController.state == .ready, accent: AppTheme.knobOchre),
             ConsoleActionItem(id: "audio", title: "AUDIO", systemImage: "speaker.wave.2.fill", action: .refreshRealtimeDevices, isEnabled: engineController.state == .ready, accent: AppTheme.knobGrey),
             ConsoleActionItem(id: "asset", title: "ASSET", systemImage: "shippingbox", action: .showAssetReport, isEnabled: true, accent: AppTheme.knobGrey),
             ConsoleActionItem(id: "help", title: "HELP", systemImage: "questionmark.circle", action: .showFAQ, isEnabled: true, accent: AppTheme.knobBlue),
-            ConsoleActionItem(id: "run", title: realtimeViewModel.isRunning ? "STOP" : "RUN", systemImage: realtimeViewModel.isRunning ? "stop.fill" : "play.fill", action: realtimeViewModel.isRunning ? .stopRealtime : .startRealtime, isEnabled: engineController.state == .ready && selectedModelName != nil && !realtimeMissingRoute, accent: realtimeViewModel.isRunning ? AppTheme.knobGrey : AppTheme.knobOrange),
+            ConsoleActionItem(id: "run", title: realtimeViewModel.isRunning ? "STOP" : "RUN", systemImage: realtimeViewModel.isRunning ? "stop.fill" : "play.fill", action: realtimeViewModel.isRunning ? .stopRealtime : .startRealtime, isEnabled: engineController.state == .ready && selectedModelName != nil && !realtimeMissingRoute && !isModelSelectionBusy, accent: realtimeViewModel.isRunning ? AppTheme.knobGrey : AppTheme.knobOrange),
         ]
+    }
+
+    private var isTopTransportBusy: Bool {
+        isBootstrapBusy || isCatalogBusy
     }
 
     private var realtimeMissingRoute: Bool {
@@ -1157,10 +1252,12 @@ private struct ConsoleDeck: View {
             }
     }
 
+    /// 预留顶部工具条占位，当前保持空实现以维持布局节奏。
     private func utilityStrip(compact: Bool, tightHeight: Bool) -> some View {
         EmptyView()
     }
 
+    /// 渲染中部黑色监视屏及其摘要信息。
     private func monitorPanel(compact: Bool, tightHeight: Bool, panelHeight: CGFloat) -> some View {
         VStack(alignment: .leading, spacing: tightHeight ? 3 : 12) {
             HStack {
@@ -1217,6 +1314,7 @@ private struct ConsoleDeck: View {
         .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
     }
 
+    /// 将监视摘要按双列网格排布。
     private func monitorSummaryGrid(compact: Bool) -> some View {
         let items: [(String, String)] = [
             ("MODEL", selectedModelName ?? "NONE"),
@@ -1244,6 +1342,7 @@ private struct ConsoleDeck: View {
         }
     }
 
+    /// 渲染单行监视读数。
     private func monitorRow(_ label: String, _ value: String, compact: Bool) -> some View {
         HStack(alignment: .firstTextBaseline) {
             Text(label)
@@ -1267,6 +1366,7 @@ private struct ConsoleDeck: View {
         }
     }
 
+    /// 渲染紧凑模式下的监视摘要 token。
     private func compactMonitorToken(_ label: String, _ value: String, accent: Color?) -> some View {
         VStack(alignment: .leading, spacing: 1) {
             Text(label)
@@ -1280,6 +1380,7 @@ private struct ConsoleDeck: View {
         }
     }
 
+    /// 渲染监视屏底部的核心指标条。
     private func monitorMetricsBar(tightHeight: Bool) -> some View {
         let items = monitorMetricItems
 
@@ -1336,6 +1437,7 @@ private struct ConsoleDeck: View {
         ]
     }
 
+    /// 渲染单个监视指标读数。
     private func monitorMetricItem(label: String, value: String, accent: Color?, compact: Bool) -> some View {
         VStack(alignment: .leading, spacing: compact ? 1 : 2) {
             Text(label)
@@ -1361,6 +1463,7 @@ private struct ConsoleDeck: View {
         return "NONE"
     }
 
+    /// 提取路径最后一级，便于在 deck 侧摘要中显示。
     private func lastPath(_ path: String) -> String {
         (path as NSString).lastPathComponent
     }
@@ -1375,10 +1478,11 @@ private struct ConsoleDeck: View {
             ConsoleActionItem(id: "single", title: "REC", systemImage: "record.circle", action: .convertSingle, isEnabled: engineController.state == .ready && !inferenceViewModel.isRunning, accent: AppTheme.knobOrange),
             ConsoleActionItem(id: "play", title: "PLAY", systemImage: "play.fill", action: .playPreview, isEnabled: inferenceViewModel.outputAudioURL != nil, accent: AppTheme.knobOrange),
             ConsoleActionItem(id: "open", title: "OPEN", systemImage: "folder.badge.waveform", action: .revealOutput, isEnabled: inferenceViewModel.outputAudioURL != nil, accent: nil),
-            ConsoleActionItem(id: "unld", title: "UNLD", systemImage: "eject.fill", action: .unloadModel, isEnabled: selectedModelName != nil, accent: AppTheme.knobGrey),
+            ConsoleActionItem(id: "unld", title: "UNLD", systemImage: "eject.fill", action: .unloadModel, isEnabled: selectedModelName != nil && !isModelSelectionBusy, accent: AppTheme.knobGrey),
         ]
     }
 
+    /// 组合底部动作面板和推子区。
     private func faderModule(trackHeight: CGFloat, faderWidth: CGFloat, compact: Bool, veryCompact: Bool, tightHeight: Bool, actionPadWidth: CGFloat) -> some View {
         VStack(spacing: 0) {
             HStack(alignment: .top, spacing: compact ? 8 : 12) {
@@ -1391,6 +1495,7 @@ private struct ConsoleDeck: View {
         .clipped()
     }
 
+    /// 渲染底部动作按钮矩阵及 patch 侧栏。
     private func deckActionPad(compact: Bool, tight: Bool, width: CGFloat) -> some View {
         let buttonSize: CGFloat = tight ? 36 : (compact ? 36 : 42)
         let actionColumnCount = tight ? 2 : (compact ? 4 : contextActions.count)
@@ -1437,6 +1542,7 @@ private struct ConsoleDeck: View {
         .padding(.bottom, tight ? 2 : 4)
     }
 
+    /// 渲染单个底部上下文动作按钮。
     @ViewBuilder
     private func contextActionButton(_ item: ConsoleActionItem, buttonSize: CGFloat, tight: Bool) -> some View {
         Button {
@@ -1461,6 +1567,7 @@ private struct ConsoleDeck: View {
         .opacity(item.isEnabled ? 1 : 0.48)
     }
 
+    /// 渲染多通道推子列。
     private func faderStack(trackHeight: CGFloat, faderWidth: CGFloat, compact: Bool, tightHeight: Bool) -> some View {
         VStack(alignment: .leading, spacing: tightHeight ? 4 : 10) {
             HStack(alignment: .bottom, spacing: compact ? max(6, faderWidth * 0.08) : max(16, faderWidth * 0.14)) {
@@ -1478,6 +1585,7 @@ private struct ConsoleDeck: View {
         }
     }
 
+    /// 渲染参数库和索引文件的 patch 侧栏。
     private func patchSidecar(compact: Bool) -> some View {
         HStack(alignment: .top, spacing: compact ? 10 : 12) {
             ConsolePatchMenuCard(
@@ -1492,6 +1600,7 @@ private struct ConsoleDeck: View {
                 selectedID: parameterBank.rawValue,
                 emptyState: "Choose parameter bank",
                 compactHeight: true,
+                isEnabled: true,
                 onSelect: { bankID in
                     guard let bank = ConsoleParameterBank(rawValue: bankID) else { return }
                     onSelectParameterBank(bank)
@@ -1519,6 +1628,7 @@ private struct ConsoleDeck: View {
                 selectedID: inferenceViewModel.customIndexURL != nil ? "__custom_active__" : (inferenceViewModel.selectedIndexPath ?? "__auto_optional__"),
                 emptyState: "No index needed",
                 compactHeight: true,
+                isEnabled: true,
                 onSelect: { selection in
                     switch selection {
                     case "__choose_custom__":
@@ -1701,14 +1811,17 @@ private struct ConsoleDeck: View {
         return min(max(Double(port - 7865) / 10.0, 0), 1)
     }
 
+    /// 将推子值格式化为整数文本。
     private func integerString(_ value: Double) -> String {
         "\(Int(value.rounded()))"
     }
 
+    /// 将推子值格式化为两位小数文本。
     private func decimalString(_ value: Double) -> String {
         value.formatted(.number.precision(.fractionLength(2)))
     }
 
+    /// 将 0...1 数值格式化为百分比文本。
     private func percentString(_ value: Double) -> String {
         "\(Int((value * 100).rounded()))%"
     }
@@ -1810,6 +1923,7 @@ private struct ConsoleKnob: View {
             }
     }
 
+    /// 按步进和取值范围收敛旋钮拖拽值。
     private func quantized(_ value: Double) -> Double {
         let stepped = (value / spec.step).rounded() * spec.step
         return min(max(stepped, spec.range.lowerBound), spec.range.upperBound)
@@ -2061,6 +2175,7 @@ private struct ConsoleFader: View {
             }
     }
 
+    /// 按步进和取值范围收敛推子拖拽值。
     private func quantized(_ value: Double) -> Double {
         let stepped = (value / spec.step).rounded() * spec.step
         return min(max(stepped, spec.range.lowerBound), spec.range.upperBound)
@@ -2068,6 +2183,7 @@ private struct ConsoleFader: View {
 }
 
 private struct WindowChromeConfigurator: NSViewRepresentable {
+    /// 创建用于配置窗口 chrome 的空宿主视图。
     func makeNSView(context: Context) -> NSView {
         let view = NSView()
         DispatchQueue.main.async {
@@ -2076,12 +2192,14 @@ private struct WindowChromeConfigurator: NSViewRepresentable {
         return view
     }
 
+    /// 在视图更新时重复应用窗口 chrome 配置。
     func updateNSView(_ nsView: NSView, context: Context) {
         DispatchQueue.main.async {
             configureWindow(for: nsView)
         }
     }
 
+    /// 统一配置 mac 窗口标题栏和背景外观。
     private func configureWindow(for view: NSView) {
         guard let window = view.window else { return }
 
@@ -2214,6 +2332,7 @@ private struct ConsoleWaveformView: View {
         }
     }
 
+    /// 生成指定通道的演示波形路径。
     private func waveformPath(in size: CGSize, index: Int) -> Path {
         var path = Path()
         let width = size.width
@@ -2658,6 +2777,7 @@ private struct ConsolePatchMenuCard: View {
     let selectedID: String?
     let emptyState: String
     let compactHeight: Bool
+    let isEnabled: Bool
     let onSelect: (String) -> Void
     @State private var isPresented = false
 
@@ -2711,6 +2831,8 @@ private struct ConsolePatchMenuCard: View {
             }
         }
         .buttonStyle(.plain)
+        .disabled(!isEnabled)
+        .opacity(isEnabled ? 1 : 0.48)
         .popover(isPresented: $isPresented, arrowEdge: .trailing) {
             VStack(alignment: .leading, spacing: 10) {
                 ConsolePopoverHeader(
@@ -2856,6 +2978,7 @@ private struct ConsolePatchOptionRow: View {
 }
 
 private struct ConsolePopoverRowButtonStyle: ButtonStyle {
+    /// 为 popover 行按钮提供轻量按压反馈。
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .scaleEffect(configuration.isPressed ? 0.988 : 1)
@@ -3150,10 +3273,12 @@ private struct ConsoleMonitorPanel: View {
         return "NONE"
     }
 
+    /// 提取路径最后一级，压缩 monitor notes 文本。
     private func lastPath(_ path: String) -> String {
         (path as NSString).lastPathComponent
     }
 
+    /// 截断过长摘要，避免监视面板撑裂。
     private func short(_ value: String) -> String {
         let trimmed = value.replacingOccurrences(of: "\n", with: " ")
         return trimmed.count > 42 ? String(trimmed.prefix(42)) + "…" : trimmed
@@ -3200,6 +3325,7 @@ private struct ConsoleStateLamp: View {
 private struct ConsoleRoundButtonStyle: ButtonStyle {
     let accent: Color?
 
+    /// 为圆形按钮提供按压态的阴影和位移反馈。
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .foregroundStyle(accent ?? Color.black.opacity(0.68))
@@ -3225,6 +3351,7 @@ private struct ConsoleCapsuleButtonStyle: ButtonStyle {
     let isSelected: Bool
     let accent: Color
 
+    /// 为胶囊按钮提供选中与按压态外观。
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .padding(.horizontal, 12)
@@ -3390,6 +3517,7 @@ private struct AssetReportSheet: View {
         return "\(okCount)/\(items.count) tracked assets verified"
     }
 
+    /// 将资产检查状态映射为对应强调色。
     private func statusColor(for status: AssetIntegrityStatus) -> Color {
         switch status {
         case .ok:
