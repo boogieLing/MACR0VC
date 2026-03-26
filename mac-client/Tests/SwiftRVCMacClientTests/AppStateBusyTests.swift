@@ -95,7 +95,7 @@ private enum BusyTestError: LocalizedError {
 }
 
 @MainActor
-private final class BusyTestBridgeClient: RVCBridgeClient {
+final class BusyTestBridgeClient: RVCBridgeClient {
     var selectModelError: Error?
     var pauseConfigureRealtime = false
     var onConfigureRealtimeStart: (() -> Void)?

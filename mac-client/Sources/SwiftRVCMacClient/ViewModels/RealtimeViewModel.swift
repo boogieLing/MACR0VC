@@ -2,6 +2,24 @@ import Foundation
 
 @MainActor
 final class RealtimeViewModel: ObservableObject {
+    private enum Defaults {
+        static let monitorMode: RealtimeMonitorMode = .outputConverted
+        static let sampleRateMode: SampleRateMode = .model
+        static let wasapiExclusive = false
+        static let threshold = -60
+        static let formant = 0.0
+        static let sampleLength = 0.25
+        static let fadeLength = 0.05
+        static let extraInferenceTime = 2.5
+        static let inputNoiseReduction = false
+        static let outputNoiseReduction = false
+        static let usePhaseVocoder = false
+
+        static var cpuProcesses: Int {
+            min(ProcessInfo.processInfo.processorCount, 4)
+        }
+    }
+
     @Published var hostapis: [String] = []
     @Published var inputDevices: [String] = []
     @Published var outputDevices: [String] = []
@@ -10,18 +28,18 @@ final class RealtimeViewModel: ObservableObject {
     @Published var selectedOutputDevice: String?
     @Published var sampleRate: Int = 0
     @Published var channels: Int = 1
-    @Published var monitorMode: RealtimeMonitorMode = .outputConverted
-    @Published var sampleRateMode: SampleRateMode = .model
-    @Published var wasapiExclusive = false
-    @Published var threshold = -60
-    @Published var formant = 0.0
-    @Published var sampleLength = 0.25
-    @Published var fadeLength = 0.05
-    @Published var extraInferenceTime = 2.5
-    @Published var cpuProcesses = min(ProcessInfo.processInfo.processorCount, 4)
-    @Published var inputNoiseReduction = false
-    @Published var outputNoiseReduction = false
-    @Published var usePhaseVocoder = false
+    @Published var monitorMode: RealtimeMonitorMode = Defaults.monitorMode
+    @Published var sampleRateMode: SampleRateMode = Defaults.sampleRateMode
+    @Published var wasapiExclusive = Defaults.wasapiExclusive
+    @Published var threshold = Defaults.threshold
+    @Published var formant = Defaults.formant
+    @Published var sampleLength = Defaults.sampleLength
+    @Published var fadeLength = Defaults.fadeLength
+    @Published var extraInferenceTime = Defaults.extraInferenceTime
+    @Published var cpuProcesses = Defaults.cpuProcesses
+    @Published var inputNoiseReduction = Defaults.inputNoiseReduction
+    @Published var outputNoiseReduction = Defaults.outputNoiseReduction
+    @Published var usePhaseVocoder = Defaults.usePhaseVocoder
     @Published private(set) var isRunning = false
     @Published private(set) var delayTimeMs = 0
     @Published private(set) var inferTimeMs = 0
@@ -32,6 +50,29 @@ final class RealtimeViewModel: ObservableObject {
 
     init(bridgeClient: RVCBridgeClient) {
         self.bridgeClient = bridgeClient
+    }
+
+    /// 将 host、输入、输出与监听路由回退为默认自动配置。
+    func resetRoutingDefaults() {
+        selectedHostapi = nil
+        selectedInputDevice = nil
+        selectedOutputDevice = nil
+        monitorMode = Defaults.monitorMode
+        wasapiExclusive = Defaults.wasapiExclusive
+    }
+
+    /// 将实时实验区的滑杆与开关回退到默认基线。
+    func resetLabDefaults() {
+        sampleRateMode = Defaults.sampleRateMode
+        threshold = Defaults.threshold
+        formant = Defaults.formant
+        sampleLength = Defaults.sampleLength
+        fadeLength = Defaults.fadeLength
+        extraInferenceTime = Defaults.extraInferenceTime
+        cpuProcesses = Defaults.cpuProcesses
+        inputNoiseReduction = Defaults.inputNoiseReduction
+        outputNoiseReduction = Defaults.outputNoiseReduction
+        usePhaseVocoder = Defaults.usePhaseVocoder
     }
 
     func refreshDevices() async throws {

@@ -362,6 +362,29 @@ final class AppState: ObservableObject {
         batchViewModel.selectedIndexPath = path
     }
 
+    /// 设置单文件输入音频，保留批处理输入队列不变。
+    func setSingleInputFileURL(_ url: URL?) {
+        inferenceViewModel.inputFileURL = url
+    }
+
+    /// 设置批处理输入目录，并清理互斥的显式文件队列与单文件输入。
+    func setBatchInputDirectoryURL(_ url: URL?) {
+        batchViewModel.inputDirectoryURL = url
+        if url != nil {
+            batchViewModel.inputFileURLs = []
+            inferenceViewModel.inputFileURL = nil
+        }
+    }
+
+    /// 设置批处理输入文件集合，并在仅选中一个文件时同步为单文件输入。
+    func setBatchInputFileURLs(_ urls: [URL]) {
+        batchViewModel.inputFileURLs = urls
+        if !urls.isEmpty {
+            batchViewModel.inputDirectoryURL = nil
+        }
+        inferenceViewModel.inputFileURL = urls.count == 1 ? urls[0] : nil
+    }
+
     /// 设置共享自定义索引文件，并覆盖两个推理面板的当前索引来源。
     func setSharedCustomIndexURL(_ url: URL) {
         inferenceViewModel.customIndexURL = url

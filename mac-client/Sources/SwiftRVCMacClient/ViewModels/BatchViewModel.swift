@@ -3,20 +3,32 @@ import Foundation
 
 @MainActor
 final class BatchViewModel: ObservableObject {
+    private enum Defaults {
+        static let speakerID = 0
+        static let transpose = 0.0
+        static let f0Method: F0Method = .rmvpe
+        static let indexRate = 1.0
+        static let filterRadius = 3.0
+        static let resampleSR = 0.0
+        static let rmsMixRate = 1.0
+        static let protect = 0.33
+        static let format: OutputFormat = .wav
+    }
+
     @Published var inputDirectoryURL: URL?
     @Published var inputFileURLs: [URL] = []
     @Published var outputDirectoryURL: URL?
     @Published var selectedIndexPath: String?
     @Published var customIndexURL: URL?
-    @Published var speakerID: Int = 0
-    @Published var transpose: Double = 0
-    @Published var f0Method: F0Method = .rmvpe
-    @Published var indexRate: Double = 1
-    @Published var filterRadius: Double = 3
-    @Published var resampleSR: Double = 0
-    @Published var rmsMixRate: Double = 1
-    @Published var protect: Double = 0.33
-    @Published var format: OutputFormat = .wav
+    @Published var speakerID: Int = Defaults.speakerID
+    @Published var transpose: Double = Defaults.transpose
+    @Published var f0Method: F0Method = Defaults.f0Method
+    @Published var indexRate: Double = Defaults.indexRate
+    @Published var filterRadius: Double = Defaults.filterRadius
+    @Published var resampleSR: Double = Defaults.resampleSR
+    @Published var rmsMixRate: Double = Defaults.rmsMixRate
+    @Published var protect: Double = Defaults.protect
+    @Published var format: OutputFormat = Defaults.format
     @Published var isRunning = false
     @Published var outputMessage = ""
     @Published var errorMessage: String?
@@ -32,6 +44,23 @@ final class BatchViewModel: ObservableObject {
     /// Returns the effective index path, preferring a custom override when one is active.
     var effectiveIndexPath: String? {
         customIndexURL?.path ?? selectedIndexPath
+    }
+
+    /// 将 patch 区共享的说话人与音高提取方式回退到默认状态。
+    func resetPatchDefaults() {
+        speakerID = Defaults.speakerID
+        f0Method = Defaults.f0Method
+    }
+
+    /// 将当前批处理参数回退到默认基线，保留输入输出目录选择。
+    func resetParameterDefaults() {
+        transpose = Defaults.transpose
+        indexRate = Defaults.indexRate
+        filterRadius = Defaults.filterRadius
+        resampleSR = Defaults.resampleSR
+        rmsMixRate = Defaults.rmsMixRate
+        protect = Defaults.protect
+        format = Defaults.format
     }
 
     /// Clears the selected index when the currently chosen path is no longer available in the catalog.

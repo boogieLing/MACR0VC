@@ -12,6 +12,7 @@ struct RootView: View {
     @State private var isUVRPresented = false
     @State private var isONNXPresented = false
     @State private var isCheckpointToolsPresented = false
+    @State private var isQueuePresented = false
 
     var body: some View {
         GeometryReader { proxy in
@@ -128,6 +129,28 @@ struct RootView: View {
                 }
             )
         }
+        .sheet(isPresented: $isQueuePresented) {
+            QueueInspectorSheet(
+                selectedModelName: appState.selectedModelName,
+                effectiveIndexPath: appState.effectiveSelectedIndexPath,
+                f0Method: appState.inferenceViewModel.f0Method.rawValue,
+                speakerID: appState.inferenceViewModel.speakerID,
+                singleInputURL: appState.inferenceViewModel.inputFileURL,
+                batchInputDirectoryURL: appState.batchViewModel.inputDirectoryURL,
+                batchInputFileURLs: appState.batchViewModel.inputFileURLs,
+                outputDirectoryURL: appState.batchViewModel.outputDirectoryURL,
+                outputAudioURL: appState.inferenceViewModel.outputAudioURL,
+                runStartedAt: appState.inferenceViewModel.runStartedAt,
+                statusMessage: appState.statusMessage,
+                lastExecutionSummary: appState.lastExecutionSummary,
+                inferenceError: appState.inferenceViewModel.errorMessage,
+                batchError: appState.batchViewModel.errorMessage,
+                realtimeError: appState.realtimeViewModel.lastError,
+                isSingleRunning: appState.inferenceViewModel.isRunning,
+                isBatchRunning: appState.batchViewModel.isRunning,
+                isRealtimeRunning: appState.realtimeViewModel.isRunning
+            )
+        }
         .animation(.spring(response: 0.28, dampingFraction: 0.9), value: appState.toast?.id)
         .onChange(of: appState.inferenceViewModel.transpose) {
             syncRealtimeControlsIfNeeded()
@@ -197,6 +220,8 @@ struct RootView: View {
                 onSelectParameterBank: { bank in
                     parameterBank = bank
                 },
+                onResetPatchBay: resetPatchBayDefaults,
+                onResetRealtimeLab: resetRealtimeLabDefaults,
                 onContextAction: handleContextAction
             )
             .frame(width: railWidth, height: contentHeight, alignment: .topLeading)
@@ -209,6 +234,7 @@ struct RootView: View {
                 inferenceViewModel: appState.inferenceViewModel,
                 batchViewModel: appState.batchViewModel,
                 realtimeViewModel: appState.realtimeViewModel,
+                audioPlayer: appState.audioPlayer,
                 models: appState.models,
                 indexPaths: appState.indexPaths,
                 selectedModelName: appState.selectedModelName,
@@ -228,6 +254,9 @@ struct RootView: View {
                 onSelectParameterBank: { bank in
                     parameterBank = bank
                 },
+                onResetRouting: resetRealtimeRoutingDefaults,
+                onResetPatchSidecar: resetPatchSidecarDefaults,
+                onResetFaders: resetActiveParameterBankDefaults,
                 onContextAction: handleContextAction
             )
             .frame(width: max(proxy.size.width - railWidth - 1, 0), height: contentHeight, alignment: .topLeading)
@@ -239,6 +268,48 @@ struct RootView: View {
     private func syncRealtimeControlsIfNeeded() {
         guard appState.realtimeViewModel.isRunning else { return }
         Task { await appState.applyRealtimeConfiguration() }
+    }
+
+    /// 将 patch bay 中暴露的共享模型参数回退到默认值。
+    private func resetPatchBayDefaults() {
+        appState.inferenceViewModel.resetPatchDefaults()
+        appState.batchViewModel.resetPatchDefaults()
+        syncRealtimeControlsIfNeeded()
+    }
+
+    /// 将 realtime lab 区域中的实时参数回退到默认值。
+    private func resetRealtimeLabDefaults() {
+        appState.realtimeViewModel.resetLabDefaults()
+        syncRealtimeControlsIfNeeded()
+    }
+
+    /// 将顶部路由区回退到自动路由与默认监听模式。
+    private func resetRealtimeRoutingDefaults() {
+        appState.realtimeViewModel.resetRoutingDefaults()
+        guard appState.engineController.state == .ready else { return }
+        Task {
+            await appState.applyRealtimeConfiguration()
+            await appState.refreshRealtimeContext()
+        }
+    }
+
+    /// 将参数库和索引区回退到默认单文件参数库与自动索引模式。
+    private func resetPatchSidecarDefaults() {
+        parameterBank = .single
+        appState.clearSharedCustomIndexURL()
+        appState.selectSharedIndexPath(nil)
+        syncRealtimeControlsIfNeeded()
+    }
+
+    /// 将当前可见的参数推子回退到对应参数库的默认值。
+    private func resetActiveParameterBankDefaults() {
+        switch parameterBank {
+        case .single:
+            appState.inferenceViewModel.resetParameterDefaults()
+            syncRealtimeControlsIfNeeded()
+        case .batch:
+            appState.batchViewModel.resetParameterDefaults()
+        }
     }
 
     private var consoleDivider: some View {
@@ -293,6 +364,8 @@ struct RootView: View {
             Task { await appState.assetAuditViewModel.refreshReport() }
         case .showFAQ:
             showFAQSheet()
+        case .showQueue:
+            isQueuePresented = true
         case .chooseAudio:
             chooseAudioFile()
         case .chooseCustomIndexFile:
@@ -304,6 +377,7 @@ struct RootView: View {
         case .clearF0CurveFile:
             clearF0CurveFile()
         case .convertSingle:
+            isQueuePresented = true
             Task { await appState.inferenceViewModel.convert(selectedModelName: appState.selectedModelName) }
         case .playPreview:
             appState.audioPlayer.play()
@@ -338,7 +412,7 @@ struct RootView: View {
         panel.canChooseFiles = true
         panel.allowsMultipleSelection = false
         if panel.runModal() == .OK {
-            appState.inferenceViewModel.inputFileURL = panel.url
+            appState.setSingleInputFileURL(panel.url)
         }
     }
 
@@ -349,8 +423,7 @@ struct RootView: View {
         panel.canChooseFiles = false
         panel.allowsMultipleSelection = false
         if panel.runModal() == .OK {
-            appState.batchViewModel.inputDirectoryURL = panel.url
-            appState.batchViewModel.inputFileURLs = []
+            appState.setBatchInputDirectoryURL(panel.url)
         }
     }
 
@@ -362,8 +435,7 @@ struct RootView: View {
         panel.canChooseFiles = true
         panel.allowsMultipleSelection = true
         if panel.runModal() == .OK {
-            appState.batchViewModel.inputFileURLs = panel.urls
-            appState.batchViewModel.inputDirectoryURL = nil
+            appState.setBatchInputFileURLs(panel.urls)
         }
     }
 
@@ -618,6 +690,7 @@ private enum ConsoleContextAction: String, Identifiable {
     case showCheckpointTools
     case showAssetReport
     case showFAQ
+    case showQueue
     case chooseAudio
     case chooseCustomIndexFile
     case clearCustomIndexFile
@@ -721,6 +794,8 @@ private struct ConsoleLeftRail: View {
     let onSelectModel: (String) -> Void
     let onSelectIndexPath: (String) -> Void
     let onSelectParameterBank: (ConsoleParameterBank) -> Void
+    let onResetPatchBay: () -> Void
+    let onResetRealtimeLab: () -> Void
     let onContextAction: (ConsoleContextAction) -> Void
 
     var body: some View {
@@ -772,9 +847,7 @@ private struct ConsoleLeftRail: View {
 
     private var assetRack: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("PATCH BAY")
-                .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                .foregroundStyle(AppTheme.labelInk)
+            ConsoleSectionHeader(title: "PATCH BAY", compact: true, action: onResetPatchBay)
 
             VStack(spacing: 6) {
                 ConsolePatchMenuCard(
@@ -861,9 +934,7 @@ private struct ConsoleLeftRail: View {
     /// 渲染左侧实时参数机架。
     private func realtimeLabRack(compact: Bool, tight: Bool) -> some View {
         VStack(alignment: .leading, spacing: tight ? 8 : 10) {
-            Text("REALTIME LAB")
-                .font(.system(size: 12, weight: .semibold, design: .monospaced))
-                .foregroundStyle(AppTheme.labelInk)
+            ConsoleSectionHeader(title: "REALTIME LAB", compact: true, action: onResetRealtimeLab)
 
                 ConsolePatchMenuCard(
                     title: "SR MODE",
@@ -1049,8 +1120,9 @@ private struct ConsoleLeftRail: View {
             ConsoleActionItem(id: "idx", title: "IDX", systemImage: "folder.badge.gearshape", action: .openIndices, isEnabled: true, accent: nil),
             ConsoleActionItem(id: "dir", title: "DIR", systemImage: "folder.fill", action: .chooseBatchInputFolder, isEnabled: true, accent: nil),
             ConsoleActionItem(id: "files", title: "FILES", systemImage: "music.note.list", action: .chooseBatchInputFiles, isEnabled: true, accent: nil),
+            ConsoleActionItem(id: "task", title: "TASK", systemImage: "list.bullet.rectangle.portrait", action: .showQueue, isEnabled: true, accent: AppTheme.knobBlue),
             ConsoleActionItem(id: "out", title: "OUT", systemImage: "folder.badge.plus", action: .chooseBatchOutputFolder, isEnabled: true, accent: nil),
-            ConsoleActionItem(id: "single", title: "REC", systemImage: "record.circle", action: .convertSingle, isEnabled: engineController.state == .ready && !inferenceViewModel.isRunning, accent: AppTheme.knobOrange),
+            ConsoleActionItem(id: "single", title: "GO", systemImage: "record.circle", action: .convertSingle, isEnabled: engineController.state == .ready && !inferenceViewModel.isRunning, accent: AppTheme.knobOrange),
             ConsoleActionItem(id: "play", title: "PLAY", systemImage: "play.fill", action: .playPreview, isEnabled: inferenceViewModel.outputAudioURL != nil, accent: AppTheme.knobOrange),
             ConsoleActionItem(id: "open", title: "OPEN", systemImage: "folder.badge.waveform", action: .revealOutput, isEnabled: inferenceViewModel.outputAudioURL != nil, accent: nil),
         ]
@@ -1077,6 +1149,7 @@ private struct ConsoleDeck: View {
     @ObservedObject var inferenceViewModel: InferenceViewModel
     @ObservedObject var batchViewModel: BatchViewModel
     @ObservedObject var realtimeViewModel: RealtimeViewModel
+    @ObservedObject var audioPlayer: AudioPreviewPlayer
     let models: [ModelOption]
     let indexPaths: [String]
     let selectedModelName: String?
@@ -1094,6 +1167,9 @@ private struct ConsoleDeck: View {
     let isCatalogBusy: Bool
     let isModelSelectionBusy: Bool
     let onSelectParameterBank: (ConsoleParameterBank) -> Void
+    let onResetRouting: () -> Void
+    let onResetPatchSidecar: () -> Void
+    let onResetFaders: () -> Void
     let onContextAction: (ConsoleContextAction) -> Void
 
     var body: some View {
@@ -1197,23 +1273,27 @@ private struct ConsoleDeck: View {
 
     /// 渲染顶部的 host、input、output、monitor 路由条。
     private func topRouteStrip(compact: Bool) -> some View {
-        return Group {
-            if compact {
-                HStack(spacing: 16) {
-                    routingHostControl
-                    routingInputControl
-                    routingOutputControl
-                    routingMonitorControl
+        VStack(alignment: .leading, spacing: compact ? 8 : 10) {
+            ConsoleSectionHeader(title: "ROUTE", compact: true, action: onResetRouting)
+
+            Group {
+                if compact {
+                    HStack(spacing: 16) {
+                        routingHostControl
+                        routingInputControl
+                        routingOutputControl
+                        routingMonitorControl
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                } else {
+                    HStack(spacing: 14) {
+                        routingHostControl.frame(maxWidth: .infinity, alignment: .leading)
+                        routingInputControl.frame(maxWidth: .infinity, alignment: .leading)
+                        routingOutputControl.frame(maxWidth: .infinity, alignment: .leading)
+                        routingMonitorControl.frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
-            } else {
-                HStack(spacing: 14) {
-                    routingHostControl.frame(maxWidth: .infinity, alignment: .leading)
-                    routingInputControl.frame(maxWidth: .infinity, alignment: .leading)
-                    routingOutputControl.frame(maxWidth: .infinity, alignment: .leading)
-                    routingMonitorControl.frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
     }
@@ -1228,7 +1308,7 @@ private struct ConsoleDeck: View {
             ConsoleActionItem(id: "audio", title: "AUDIO", systemImage: "speaker.wave.2.fill", action: .refreshRealtimeDevices, isEnabled: engineController.state == .ready, accent: AppTheme.knobGrey),
             ConsoleActionItem(id: "asset", title: "ASSET", systemImage: "shippingbox", action: .showAssetReport, isEnabled: true, accent: AppTheme.knobGrey),
             ConsoleActionItem(id: "help", title: "HELP", systemImage: "questionmark.circle", action: .showFAQ, isEnabled: true, accent: AppTheme.knobBlue),
-            ConsoleActionItem(id: "run", title: realtimeViewModel.isRunning ? "STOP" : "RUN", systemImage: realtimeViewModel.isRunning ? "stop.fill" : "play.fill", action: realtimeViewModel.isRunning ? .stopRealtime : .startRealtime, isEnabled: engineController.state == .ready && selectedModelName != nil && !realtimeMissingRoute && !isModelSelectionBusy, accent: realtimeViewModel.isRunning ? AppTheme.knobGrey : AppTheme.knobOrange),
+            ConsoleActionItem(id: "run", title: realtimeViewModel.isRunning ? "STOP" : "LIVE", systemImage: realtimeViewModel.isRunning ? "stop.fill" : "play.fill", action: realtimeViewModel.isRunning ? .stopRealtime : .startRealtime, isEnabled: engineController.state == .ready && selectedModelName != nil && !realtimeMissingRoute && !isModelSelectionBusy, accent: realtimeViewModel.isRunning ? AppTheme.knobGrey : AppTheme.knobOrange),
         ]
     }
 
@@ -1272,7 +1352,7 @@ private struct ConsoleDeck: View {
             .foregroundStyle(Color.white.opacity(0.82))
 
             if tightHeight {
-                ConsoleWaveformView()
+                monitorWaveform(tightHeight: true)
                     .frame(height: 58)
 
                 compactMonitorSummary
@@ -1280,7 +1360,7 @@ private struct ConsoleDeck: View {
                 Group {
                     if compact {
                         VStack(alignment: .leading, spacing: 10) {
-                            ConsoleWaveformView()
+                            monitorWaveform(tightHeight: false)
                                 .frame(maxWidth: .infinity)
                                 .frame(height: 84)
 
@@ -1288,7 +1368,7 @@ private struct ConsoleDeck: View {
                         }
                     } else {
                         HStack(alignment: .top, spacing: 16) {
-                            ConsoleWaveformView()
+                            monitorWaveform(tightHeight: false)
                                 .frame(maxWidth: .infinity)
                                 .frame(height: 198)
 
@@ -1312,6 +1392,16 @@ private struct ConsoleDeck: View {
                 .strokeBorder(Color.black.opacity(0.86), lineWidth: 4)
         )
         .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+    }
+
+    /// 在单文件转换页优先展示产物波形与播放控制，其余页面保留演示波形。
+    @ViewBuilder
+    private func monitorWaveform(tightHeight: Bool) -> some View {
+        ConsolePreviewWaveformPanel(
+            audioPlayer: audioPlayer,
+            isRunning: inferenceViewModel.isRunning,
+            tightHeight: tightHeight
+        )
     }
 
     /// 将监视摘要按双列网格排布。
@@ -1474,8 +1564,9 @@ private struct ConsoleDeck: View {
             ConsoleActionItem(id: "idx", title: "IDX", systemImage: "folder.badge.gearshape", action: .openIndices, isEnabled: true, accent: nil),
             ConsoleActionItem(id: "dir", title: "DIR", systemImage: "folder.fill", action: .chooseBatchInputFolder, isEnabled: true, accent: nil),
             ConsoleActionItem(id: "files", title: "FILES", systemImage: "music.note.list", action: .chooseBatchInputFiles, isEnabled: true, accent: nil),
+            ConsoleActionItem(id: "task", title: "TASK", systemImage: "list.bullet.rectangle.portrait", action: .showQueue, isEnabled: true, accent: AppTheme.knobBlue),
             ConsoleActionItem(id: "out", title: "OUT", systemImage: "folder.badge.plus", action: .chooseBatchOutputFolder, isEnabled: true, accent: nil),
-            ConsoleActionItem(id: "single", title: "REC", systemImage: "record.circle", action: .convertSingle, isEnabled: engineController.state == .ready && !inferenceViewModel.isRunning, accent: AppTheme.knobOrange),
+            ConsoleActionItem(id: "single", title: "GO", systemImage: "record.circle", action: .convertSingle, isEnabled: engineController.state == .ready && !inferenceViewModel.isRunning, accent: AppTheme.knobOrange),
             ConsoleActionItem(id: "play", title: "PLAY", systemImage: "play.fill", action: .playPreview, isEnabled: inferenceViewModel.outputAudioURL != nil, accent: AppTheme.knobOrange),
             ConsoleActionItem(id: "open", title: "OPEN", systemImage: "folder.badge.waveform", action: .revealOutput, isEnabled: inferenceViewModel.outputAudioURL != nil, accent: nil),
             ConsoleActionItem(id: "unld", title: "UNLD", systemImage: "eject.fill", action: .unloadModel, isEnabled: selectedModelName != nil && !isModelSelectionBusy, accent: AppTheme.knobGrey),
@@ -1570,6 +1661,8 @@ private struct ConsoleDeck: View {
     /// 渲染多通道推子列。
     private func faderStack(trackHeight: CGFloat, faderWidth: CGFloat, compact: Bool, tightHeight: Bool) -> some View {
         VStack(alignment: .leading, spacing: tightHeight ? 4 : 10) {
+            ConsoleSectionHeader(title: "FADERS", compact: true, action: onResetFaders)
+
             HStack(alignment: .bottom, spacing: compact ? max(6, faderWidth * 0.08) : max(16, faderWidth * 0.14)) {
                 if !compact {
                     Spacer(minLength: 0)
@@ -1587,70 +1680,74 @@ private struct ConsoleDeck: View {
 
     /// 渲染参数库和索引文件的 patch 侧栏。
     private func patchSidecar(compact: Bool) -> some View {
-        HStack(alignment: .top, spacing: compact ? 10 : 12) {
-            ConsolePatchMenuCard(
-                title: "PARAM BANK",
-                value: parameterBank.title.uppercased(),
-                detail: parameterBank.detail,
-                actionLabel: "SET",
-                accent: parameterBank == .single ? AppTheme.knobOrange : AppTheme.knobBlue,
-                options: ConsoleParameterBank.allCases.map { bank in
-                    ConsolePickerOption(id: bank.rawValue, title: bank.title.uppercased(), subtitle: bank.detail)
-                },
-                selectedID: parameterBank.rawValue,
-                emptyState: "Choose parameter bank",
-                compactHeight: true,
-                isEnabled: true,
-                onSelect: { bankID in
-                    guard let bank = ConsoleParameterBank(rawValue: bankID) else { return }
-                    onSelectParameterBank(bank)
-                }
-            )
-            .frame(maxWidth: .infinity, minHeight: compact ? 72 : 74, alignment: .leading)
+        VStack(alignment: .leading, spacing: compact ? 8 : 10) {
+            ConsoleSectionHeader(title: "PATCH CONFIG", compact: true, action: onResetPatchSidecar)
 
-            ConsolePatchMenuCard(
-                title: "INDEX FILE",
-                value: inferenceViewModel.customIndexURL?.lastPathComponent ?? inferenceViewModel.selectedIndexPath.map(lastPath) ?? "Optional / auto",
-                detail: inferenceViewModel.customIndexURL == nil ? (indexPaths.isEmpty ? "Optional for RVC" : "\(indexPaths.count) loaded, optional") : "External override active",
-                actionLabel: "PICK",
-                accent: inferenceViewModel.selectedIndexPath == nil ? nil : AppTheme.knobOchre,
-                options: (inferenceViewModel.customIndexURL.map {
-                    [ConsolePickerOption(id: "__custom_active__", title: "Custom override", subtitle: $0.lastPathComponent)]
-                } ?? []) + [
-                    ConsolePickerOption(id: "__choose_custom__", title: "Choose external index", subtitle: "Use a custom .index file or compatible path"),
-                ] + (inferenceViewModel.customIndexURL == nil ? [] : [
-                    ConsolePickerOption(id: "__clear_custom__", title: "Clear override", subtitle: "Return to catalog or auto index")
-                ]) + [
-                    ConsolePickerOption(id: "__auto_optional__", title: "No index", subtitle: "Optional, auto-match if available")
-                ] + indexPaths.map {
-                    ConsolePickerOption(id: $0, title: lastPath($0), subtitle: nil)
-                },
-                selectedID: inferenceViewModel.customIndexURL != nil ? "__custom_active__" : (inferenceViewModel.selectedIndexPath ?? "__auto_optional__"),
-                emptyState: "No index needed",
-                compactHeight: true,
-                isEnabled: true,
-                onSelect: { selection in
-                    switch selection {
-                    case "__choose_custom__":
-                        onContextAction(.chooseCustomIndexFile)
-                    case "__clear_custom__":
-                        onContextAction(.clearCustomIndexFile)
-                    case "__custom_active__":
-                        break
-                    case "__auto_optional__":
-                        inferenceViewModel.customIndexURL = nil
-                        batchViewModel.customIndexURL = nil
-                        inferenceViewModel.selectedIndexPath = nil
-                        batchViewModel.selectedIndexPath = nil
-                    default:
-                        inferenceViewModel.customIndexURL = nil
-                        batchViewModel.customIndexURL = nil
-                        inferenceViewModel.selectedIndexPath = selection
-                        batchViewModel.selectedIndexPath = selection
+            HStack(alignment: .top, spacing: compact ? 10 : 12) {
+                ConsolePatchMenuCard(
+                    title: "PARAM BANK",
+                    value: parameterBank.title.uppercased(),
+                    detail: parameterBank.detail,
+                    actionLabel: "SET",
+                    accent: parameterBank == .single ? AppTheme.knobOrange : AppTheme.knobBlue,
+                    options: ConsoleParameterBank.allCases.map { bank in
+                        ConsolePickerOption(id: bank.rawValue, title: bank.title.uppercased(), subtitle: bank.detail)
+                    },
+                    selectedID: parameterBank.rawValue,
+                    emptyState: "Choose parameter bank",
+                    compactHeight: true,
+                    isEnabled: true,
+                    onSelect: { bankID in
+                        guard let bank = ConsoleParameterBank(rawValue: bankID) else { return }
+                        onSelectParameterBank(bank)
                     }
-                }
-            )
-            .frame(maxWidth: .infinity, minHeight: compact ? 72 : 74, alignment: .leading)
+                )
+                .frame(maxWidth: .infinity, minHeight: compact ? 72 : 74, alignment: .leading)
+
+                ConsolePatchMenuCard(
+                    title: "INDEX FILE",
+                    value: inferenceViewModel.customIndexURL?.lastPathComponent ?? inferenceViewModel.selectedIndexPath.map(lastPath) ?? "Optional / auto",
+                    detail: inferenceViewModel.customIndexURL == nil ? (indexPaths.isEmpty ? "Optional for RVC" : "\(indexPaths.count) loaded, optional") : "External override active",
+                    actionLabel: "PICK",
+                    accent: inferenceViewModel.selectedIndexPath == nil ? nil : AppTheme.knobOchre,
+                    options: (inferenceViewModel.customIndexURL.map {
+                        [ConsolePickerOption(id: "__custom_active__", title: "Custom override", subtitle: $0.lastPathComponent)]
+                    } ?? []) + [
+                        ConsolePickerOption(id: "__choose_custom__", title: "Choose external index", subtitle: "Use a custom .index file or compatible path"),
+                    ] + (inferenceViewModel.customIndexURL == nil ? [] : [
+                        ConsolePickerOption(id: "__clear_custom__", title: "Clear override", subtitle: "Return to catalog or auto index")
+                    ]) + [
+                        ConsolePickerOption(id: "__auto_optional__", title: "No index", subtitle: "Optional, auto-match if available")
+                    ] + indexPaths.map {
+                        ConsolePickerOption(id: $0, title: lastPath($0), subtitle: nil)
+                    },
+                    selectedID: inferenceViewModel.customIndexURL != nil ? "__custom_active__" : (inferenceViewModel.selectedIndexPath ?? "__auto_optional__"),
+                    emptyState: "No index needed",
+                    compactHeight: true,
+                    isEnabled: true,
+                    onSelect: { selection in
+                        switch selection {
+                        case "__choose_custom__":
+                            onContextAction(.chooseCustomIndexFile)
+                        case "__clear_custom__":
+                            onContextAction(.clearCustomIndexFile)
+                        case "__custom_active__":
+                            break
+                        case "__auto_optional__":
+                            inferenceViewModel.customIndexURL = nil
+                            batchViewModel.customIndexURL = nil
+                            inferenceViewModel.selectedIndexPath = nil
+                            batchViewModel.selectedIndexPath = nil
+                        default:
+                            inferenceViewModel.customIndexURL = nil
+                            batchViewModel.customIndexURL = nil
+                            inferenceViewModel.selectedIndexPath = selection
+                            batchViewModel.selectedIndexPath = selection
+                        }
+                    }
+                )
+                .frame(maxWidth: .infinity, minHeight: compact ? 72 : 74, alignment: .leading)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -2548,6 +2645,39 @@ private struct ConsoleInlineRouteControl: View {
     }
 }
 
+private struct ConsoleSectionHeader: View {
+    let title: String
+    let compact: Bool
+    let action: () -> Void
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            Text(title)
+                .font(.system(size: compact ? 10 : 12, weight: .semibold, design: .monospaced))
+                .foregroundStyle(AppTheme.labelInk)
+
+            Spacer(minLength: 8)
+
+            Button(action: action) {
+                Text("RESET")
+                    .font(.system(size: compact ? 8 : 9, weight: .bold, design: .monospaced))
+                    .foregroundStyle(Color.black.opacity(0.64))
+                    .padding(.horizontal, compact ? 8 : 10)
+                    .padding(.vertical, compact ? 4 : 5)
+                    .background(
+                        Capsule(style: .continuous)
+                            .fill(Color.white.opacity(0.28))
+                            .overlay(
+                                Capsule(style: .continuous)
+                                    .strokeBorder(Color.black.opacity(0.08), lineWidth: 1)
+                            )
+                    )
+            }
+            .buttonStyle(.plain)
+        }
+    }
+}
+
 private struct ConsolePopoverHeader: View {
     let eyebrow: String
     let title: String
@@ -3391,6 +3521,7 @@ private struct FAQDocumentSheet: View {
                 Button("Close") {
                     dismiss()
                 }
+                .foregroundStyle(AppTheme.labelInk.opacity(0.82))
                 .keyboardShortcut(.cancelAction)
             }
 
@@ -3409,6 +3540,412 @@ private struct FAQDocumentSheet: View {
             return attributed
         }
         return AttributedString(markdown)
+    }
+}
+
+private struct QueueRuntimeProgressCard: View {
+    let title: String
+    let startedAt: Date?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("RUN WINDOW")
+                .font(.system(size: 11, weight: .bold, design: .monospaced))
+                .foregroundStyle(AppTheme.labelInk)
+
+            TimelineView(.periodic(from: .now, by: 0.25)) { context in
+                VStack(alignment: .leading, spacing: 8) {
+                    BusyFluorescentBarView(style: .global)
+                    HStack(alignment: .firstTextBaseline) {
+                        Text(title.uppercased())
+                            .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                            .foregroundStyle(AppTheme.valueInk)
+                        Spacer()
+                        Text(elapsedString(now: context.date))
+                            .font(.system(size: 10, weight: .medium, design: .monospaced))
+                            .foregroundStyle(AppTheme.labelInk.opacity(0.72))
+                    }
+                    Text("Indeterminate progress. The bar stays active until the engine returns a result.")
+                        .font(.system(size: 10, weight: .medium, design: .rounded))
+                        .foregroundStyle(AppTheme.labelInk.opacity(0.74))
+                }
+            }
+        }
+        .padding(14)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(Color.white.opacity(0.56))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .strokeBorder(Color.black.opacity(0.06), lineWidth: 1)
+                )
+        )
+    }
+
+    private func elapsedString(now: Date) -> String {
+        guard let startedAt else { return "0.0S" }
+        let elapsed = max(now.timeIntervalSince(startedAt), 0)
+        return "\(elapsed.formatted(.number.precision(.fractionLength(1))))S"
+    }
+}
+
+private struct ConsolePreviewWaveformPanel: View {
+    @ObservedObject var audioPlayer: AudioPreviewPlayer
+    let isRunning: Bool
+    let tightHeight: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: tightHeight ? 6 : 10) {
+            waveformBody
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+            HStack(spacing: tightHeight ? 8 : 12) {
+                Button {
+                    audioPlayer.togglePlayback()
+                } label: {
+                    Image(systemName: audioPlayer.isPlaying ? "pause.fill" : "play.fill")
+                        .font(.system(size: tightHeight ? 11 : 12, weight: .bold))
+                        .frame(width: tightHeight ? 24 : 28, height: tightHeight ? 24 : 28)
+                }
+                .buttonStyle(ConsoleRoundButtonStyle(accent: AppTheme.knobOrange))
+                .disabled(audioPlayer.loadedURL == nil)
+                .opacity(audioPlayer.loadedURL == nil ? 0.42 : 1)
+
+                Slider(
+                    value: Binding(
+                        get: { audioPlayer.playbackProgress },
+                        set: { audioPlayer.seek(progress: $0) }
+                    ),
+                    in: 0...1
+                )
+                .tint(AppTheme.knobOrange)
+                .disabled(audioPlayer.loadedURL == nil)
+
+                Text(timeLabel(audioPlayer.currentTime))
+                    .frame(width: 46, alignment: .trailing)
+                Text("/")
+                    .foregroundStyle(Color.white.opacity(0.36))
+                Text(timeLabel(audioPlayer.duration))
+                    .frame(width: 46, alignment: .leading)
+            }
+            .font(.system(size: tightHeight ? 9 : 10, weight: .medium, design: .monospaced))
+            .foregroundStyle(Color.white.opacity(0.82))
+        }
+    }
+
+    @ViewBuilder
+    private var waveformBody: some View {
+        GeometryReader { proxy in
+            ZStack(alignment: .leading) {
+                if audioPlayer.waveformSamples.isEmpty {
+                    ConsoleWaveformView()
+                    if isRunning {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Spacer()
+                            BusyFluorescentBarView(style: .global)
+                                .frame(width: min(proxy.size.width * 0.34, 180))
+                            Text("PROCESSING OUTPUT")
+                                .font(.system(size: 10, weight: .bold, design: .monospaced))
+                                .foregroundStyle(Color.white.opacity(0.74))
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.bottom, 12)
+                    }
+                } else {
+                    HStack(alignment: .center, spacing: 3) {
+                        ForEach(Array(audioPlayer.waveformSamples.enumerated()), id: \.offset) { index, sample in
+                            Capsule(style: .continuous)
+                                .fill(barColor(for: index))
+                                .frame(maxWidth: .infinity)
+                                .frame(height: max(8, proxy.size.height * sample * 0.88))
+                        }
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+                }
+            }
+        }
+    }
+
+    private func barColor(for index: Int) -> Color {
+        guard !audioPlayer.waveformSamples.isEmpty else { return AppTheme.knobOrange }
+        let playedCount = Int((Double(audioPlayer.waveformSamples.count) * audioPlayer.playbackProgress).rounded(.down))
+        return index <= playedCount ? AppTheme.knobOrange : Color.white.opacity(0.72)
+    }
+
+    private func timeLabel(_ value: TimeInterval) -> String {
+        guard value.isFinite else { return "0:00" }
+        let seconds = Int(value.rounded(.down))
+        let minutes = seconds / 60
+        let remainder = seconds % 60
+        return "\(minutes):" + String(format: "%02d", remainder)
+    }
+}
+
+private struct QueueInspectorSheet: View {
+    let selectedModelName: String?
+    let effectiveIndexPath: String?
+    let f0Method: String
+    let speakerID: Int
+    let singleInputURL: URL?
+    let batchInputDirectoryURL: URL?
+    let batchInputFileURLs: [URL]
+    let outputDirectoryURL: URL?
+    let outputAudioURL: URL?
+    let runStartedAt: Date?
+    let statusMessage: String
+    let lastExecutionSummary: String
+    let inferenceError: String?
+    let batchError: String?
+    let realtimeError: String?
+    let isSingleRunning: Bool
+    let isBatchRunning: Bool
+    let isRealtimeRunning: Bool
+
+    @Environment(\.dismiss) private var dismiss
+
+    private var taskSummary: String {
+        if isSingleRunning {
+            return "Single convert running"
+        }
+        if isBatchRunning {
+            return "Batch convert running"
+        }
+        if isRealtimeRunning {
+            return "Realtime monitoring active"
+        }
+        if singleInputURL != nil {
+            return "Single input ready"
+        }
+        if batchInputDirectoryURL != nil || !batchInputFileURLs.isEmpty {
+            return "Batch queue ready"
+        }
+        return "Idle"
+    }
+
+    private var errorRows: [(String, String)] {
+        var rows: [(String, String)] = []
+        if let inferenceError, !inferenceError.isEmpty {
+            rows.append(("SINGLE", inferenceError))
+        }
+        if let batchError, !batchError.isEmpty {
+            rows.append(("BATCH", batchError))
+        }
+        if let realtimeError, !realtimeError.isEmpty {
+            rows.append(("LIVE", realtimeError))
+        }
+        return rows
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("TASK QUEUE")
+                        .font(.system(size: 18, weight: .bold, design: .monospaced))
+                        .foregroundStyle(AppTheme.labelInk)
+                    Text(taskSummary.uppercased())
+                        .font(.system(size: 11, weight: .medium, design: .monospaced))
+                        .foregroundStyle(AppTheme.labelInk.opacity(0.76))
+                }
+
+                Spacer()
+
+                Button("Close") {
+                    dismiss()
+                }
+                .foregroundStyle(AppTheme.labelInk.opacity(0.82))
+                .keyboardShortcut(.cancelAction)
+            }
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    queueGroup(
+                        title: "ACTIVE",
+                        rows: [
+                            ("MODEL", selectedModelName ?? "NONE"),
+                            ("TASK", taskSummary),
+                            ("INDEX", effectiveIndexPath ?? "AUTO"),
+                            ("F0", f0Method.uppercased()),
+                            ("SPK", "\(speakerID)"),
+                            ("STATUS", statusMessage),
+                            ("LAST", lastExecutionSummary),
+                        ]
+                    )
+
+                    if isSingleRunning || isBatchRunning || isRealtimeRunning {
+                        QueueRuntimeProgressCard(
+                            title: taskSummary,
+                            startedAt: runStartedAt
+                        )
+                    }
+
+                    if !errorRows.isEmpty {
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack {
+                                Text("ERROR")
+                                    .font(.system(size: 11, weight: .bold, design: .monospaced))
+                                    .foregroundStyle(AppTheme.labelInk)
+                                Spacer()
+                                copyButton(label: "COPY ALL", value: errorRows.map { "[\($0.0)] \($0.1)" }.joined(separator: "\n\n"))
+                            }
+
+                            VStack(alignment: .leading, spacing: 8) {
+                                ForEach(errorRows.indices, id: \.self) { index in
+                                    queueValueCard(
+                                        title: errorRows[index].0,
+                                        value: errorRows[index].1,
+                                        accent: AppTheme.knobOrange,
+                                        allowCopy: true
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    queueGroup(
+                        title: "SINGLE INPUT",
+                        rows: [
+                            ("FILE", singleInputURL?.lastPathComponent ?? "NONE"),
+                            ("PATH", singleInputURL?.path ?? "No audio selected"),
+                            ("OUTPUT", outputAudioURL?.lastPathComponent ?? "PENDING"),
+                        ]
+                    )
+
+                    queueGroup(
+                        title: "BATCH",
+                        rows: [
+                            ("DIRECTORY", batchInputDirectoryURL?.lastPathComponent ?? "NONE"),
+                            ("FILES", batchInputFileURLs.isEmpty ? "0" : "\(batchInputFileURLs.count)"),
+                            ("OUT DIR", outputDirectoryURL?.lastPathComponent ?? "NONE"),
+                        ]
+                    )
+
+                    if !batchInputFileURLs.isEmpty {
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack {
+                                Text("QUEUED FILES")
+                                    .font(.system(size: 11, weight: .bold, design: .monospaced))
+                                    .foregroundStyle(AppTheme.labelInk)
+                                Spacer()
+                                copyButton(
+                                    label: "COPY PATHS",
+                                    value: batchInputFileURLs.map(\.path).joined(separator: "\n")
+                                )
+                            }
+
+                            ScrollView {
+                                VStack(alignment: .leading, spacing: 8) {
+                                    ForEach(batchInputFileURLs, id: \.path) { url in
+                                        queueValueCard(
+                                            title: url.lastPathComponent,
+                                            value: url.path,
+                                            accent: AppTheme.knobBlue,
+                                            allowCopy: true
+                                        )
+                                    }
+                                }
+                            }
+                            .frame(maxHeight: 220)
+                        }
+                    }
+                }
+            }
+        }
+        .padding(20)
+        .frame(minWidth: 720, minHeight: 520)
+        .background(AppTheme.consoleShellGradient)
+    }
+
+    private func queueGroup(title: String, rows: [(String, String)]) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title)
+                .font(.system(size: 11, weight: .bold, design: .monospaced))
+                .foregroundStyle(AppTheme.labelInk)
+
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(rows.indices, id: \.self) { index in
+                    HStack(alignment: .firstTextBaseline, spacing: 12) {
+                        Text(rows[index].0)
+                            .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                            .foregroundStyle(AppTheme.labelInk.opacity(0.72))
+                            .frame(width: 72, alignment: .leading)
+                        Text(rows[index].1.uppercased())
+                            .font(.system(size: 10, weight: .medium, design: .monospaced))
+                            .foregroundStyle(AppTheme.valueInk)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.72)
+                        Spacer(minLength: 0)
+                        if shouldAllowCopy(for: rows[index].0) {
+                            copyButton(label: "COPY", value: rows[index].1)
+                        }
+                    }
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 12)
+            .background(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(Color.white.opacity(0.2))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .strokeBorder(Color.black.opacity(0.07), lineWidth: 1)
+                    )
+            )
+        }
+    }
+
+    private func shouldAllowCopy(for label: String) -> Bool {
+        ["STATUS", "LAST", "PATH", "OUTPUT", "OUT DIR", "INDEX"].contains(label)
+    }
+
+    private func queueValueCard(title: String, value: String, accent: Color, allowCopy: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(title.uppercased())
+                    .font(.system(size: 10, weight: .bold, design: .monospaced))
+                    .foregroundStyle(accent)
+                Spacer()
+                if allowCopy {
+                    copyButton(label: "COPY", value: value)
+                }
+            }
+
+            Text(value)
+                .font(.system(size: 10, weight: .medium, design: .monospaced))
+                .foregroundStyle(AppTheme.valueInk)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 9)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color.white.opacity(0.24))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .strokeBorder(Color.black.opacity(0.06), lineWidth: 1)
+                )
+        )
+    }
+
+    private func copyButton(label: String, value: String) -> some View {
+        Button(label) {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(value, forType: .string)
+        }
+        .buttonStyle(.plain)
+        .font(.system(size: 8, weight: .bold, design: .monospaced))
+        .foregroundStyle(Color.black.opacity(0.62))
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(
+            Capsule(style: .continuous)
+                .fill(Color.white.opacity(0.38))
+                .overlay(
+                    Capsule(style: .continuous)
+                        .strokeBorder(Color.black.opacity(0.08), lineWidth: 1)
+                )
+        )
     }
 }
 
@@ -3440,6 +3977,7 @@ private struct AssetReportSheet: View {
                 Button("Close") {
                     dismiss()
                 }
+                .foregroundStyle(AppTheme.labelInk.opacity(0.82))
                 .keyboardShortcut(.cancelAction)
             }
 
