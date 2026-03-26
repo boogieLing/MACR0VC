@@ -14,3 +14,4 @@ engine/logs/
 engine/opt/
 engine/.env
 dist/
+test/

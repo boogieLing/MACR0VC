@@ -148,6 +148,11 @@ final class BusyTestBridgeClient: RVCBridgeClient {
         UVRModelCatalog(modelNames: [])
     }
 
+    /// 返回固定释放结果，满足 UVR 内存清理协议。
+    func releaseUVRMemory() async throws -> MemoryReleaseResult {
+        MemoryReleaseResult(released: true, message: "released")
+    }
+
     /// 返回空 UVR 结果，满足测试桩最小协议实现。
     func convertUVR(_ request: UVRRequest) async throws -> UVRResult {
         UVRResult(message: "", vocalOutputDirectoryURL: nil, instrumentalOutputDirectoryURL: nil)

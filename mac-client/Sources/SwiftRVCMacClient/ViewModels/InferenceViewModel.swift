@@ -77,6 +77,7 @@ final class InferenceViewModel: ObservableObject {
     func convert(selectedModelName: String?) async {
         errorMessage = nil
         outputMessage = ""
+        outputAudioURL = nil
 
         guard let selectedModelName else {
             errorMessage = ValidationError.missingModel.errorDescription

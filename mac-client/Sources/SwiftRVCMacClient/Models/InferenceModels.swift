@@ -41,6 +41,11 @@ struct ModelUnloadResult: Codable {
     let unloaded: Bool
 }
 
+struct MemoryReleaseResult: Codable {
+    let released: Bool
+    let message: String
+}
+
 struct SingleInferenceRequest: Encodable {
     let modelName: String
     let inputFileURL: URL

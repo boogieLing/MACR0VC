@@ -1,4 +1,5 @@
 import AppKit
+import AVFoundation
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -13,6 +14,7 @@ struct RootView: View {
     @State private var isONNXPresented = false
     @State private var isCheckpointToolsPresented = false
     @State private var isQueuePresented = false
+    @State private var isHistoryPresented = false
 
     var body: some View {
         GeometryReader { proxy in
@@ -83,7 +85,9 @@ struct RootView: View {
         .sheet(isPresented: $isAssetReportPresented) {
             AssetReportSheet(viewModel: appState.assetAuditViewModel)
         }
-        .sheet(isPresented: $isUVRPresented) {
+        .sheet(isPresented: $isUVRPresented, onDismiss: {
+            Task { await appState.uvrViewModel.releaseMemory() }
+        }) {
             UVRSheet(
                 viewModel: appState.uvrViewModel,
                 onChooseInputDirectory: chooseUVRInputDirectory,
@@ -149,6 +153,15 @@ struct RootView: View {
                 isSingleRunning: appState.inferenceViewModel.isRunning,
                 isBatchRunning: appState.batchViewModel.isRunning,
                 isRealtimeRunning: appState.realtimeViewModel.isRunning
+            )
+        }
+        .sheet(isPresented: $isHistoryPresented) {
+            ResultHistorySheet(
+                entries: appState.taskHistory,
+                onClear: appState.clearTaskHistory,
+                onLoadOutput: appState.loadTaskHistoryOutput(_:),
+                onPlayOutput: appState.playTaskHistoryOutput(_:),
+                onRevealOutput: appState.revealTaskHistoryOutput(_:)
             )
         }
         .animation(.spring(response: 0.28, dampingFraction: 0.9), value: appState.toast?.id)
@@ -366,6 +379,8 @@ struct RootView: View {
             showFAQSheet()
         case .showQueue:
             isQueuePresented = true
+        case .showHistory:
+            isHistoryPresented = true
         case .chooseAudio:
             chooseAudioFile()
         case .chooseCustomIndexFile:
@@ -691,6 +706,7 @@ private enum ConsoleContextAction: String, Identifiable {
     case showAssetReport
     case showFAQ
     case showQueue
+    case showHistory
     case chooseAudio
     case chooseCustomIndexFile
     case clearCustomIndexFile
@@ -1121,6 +1137,7 @@ private struct ConsoleLeftRail: View {
             ConsoleActionItem(id: "dir", title: "DIR", systemImage: "folder.fill", action: .chooseBatchInputFolder, isEnabled: true, accent: nil),
             ConsoleActionItem(id: "files", title: "FILES", systemImage: "music.note.list", action: .chooseBatchInputFiles, isEnabled: true, accent: nil),
             ConsoleActionItem(id: "task", title: "TASK", systemImage: "list.bullet.rectangle.portrait", action: .showQueue, isEnabled: true, accent: AppTheme.knobBlue),
+            ConsoleActionItem(id: "res", title: "RES", systemImage: "clock.arrow.circlepath", action: .showHistory, isEnabled: true, accent: AppTheme.knobGrey),
             ConsoleActionItem(id: "out", title: "OUT", systemImage: "folder.badge.plus", action: .chooseBatchOutputFolder, isEnabled: true, accent: nil),
             ConsoleActionItem(id: "single", title: "GO", systemImage: "record.circle", action: .convertSingle, isEnabled: engineController.state == .ready && !inferenceViewModel.isRunning, accent: AppTheme.knobOrange),
             ConsoleActionItem(id: "play", title: "PLAY", systemImage: "play.fill", action: .playPreview, isEnabled: inferenceViewModel.outputAudioURL != nil, accent: AppTheme.knobOrange),
@@ -1182,8 +1199,10 @@ private struct ConsoleDeck: View {
             let contentHeight = max(proxy.size.height - (tightDeck ? 36 : 44), 420)
             let actionPadWidth = compactDeck ? 308.0 : 560.0
             let monitorHeight = min(max(contentHeight * (tightDeck ? 0.17 : (shortDeck ? 0.38 : 0.45)), tightDeck ? 132 : 244), shortDeck ? 292 : 384)
-            let faderModuleHeight = min(max(contentHeight * (tightDeck ? 0.36 : (shortDeck ? 0.46 : 0.52)), tightDeck ? 214 : 288), shortDeck ? 336 : 428)
-            let trackHeight = min(max(faderModuleHeight - (tightDeck ? 56 : 98), tightDeck ? 110 : 148), shortDeck ? 188 : 232)
+            let verticalReserve = tightDeck ? 236.0 : (compactDeck ? 350.0 : 478.0)
+            let availableFaderHeight = max(proxy.size.height - monitorHeight - verticalReserve, tightDeck ? 214.0 : 288.0)
+            let faderModuleHeight = min(availableFaderHeight, shortDeck ? 320.0 : 388.0)
+            let trackHeight = min(max(faderModuleHeight - (tightDeck ? 74 : 126), tightDeck ? 92.0 : 128.0), shortDeck ? 168.0 : 196.0)
             let faderWidth = max(
                 veryCompactDeck ? 38 : (compactDeck ? 46 : 70),
                 min(
@@ -1205,7 +1224,7 @@ private struct ConsoleDeck: View {
                     tightHeight: tightDeck,
                     actionPadWidth: actionPadWidth
                 )
-                    .padding(.top, tightDeck ? 6 : 18)
+                    .padding(.top, tightDeck ? 4 : 10)
                     .frame(height: faderModuleHeight, alignment: .top)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -1565,6 +1584,7 @@ private struct ConsoleDeck: View {
             ConsoleActionItem(id: "dir", title: "DIR", systemImage: "folder.fill", action: .chooseBatchInputFolder, isEnabled: true, accent: nil),
             ConsoleActionItem(id: "files", title: "FILES", systemImage: "music.note.list", action: .chooseBatchInputFiles, isEnabled: true, accent: nil),
             ConsoleActionItem(id: "task", title: "TASK", systemImage: "list.bullet.rectangle.portrait", action: .showQueue, isEnabled: true, accent: AppTheme.knobBlue),
+            ConsoleActionItem(id: "res", title: "RES", systemImage: "clock.arrow.circlepath", action: .showHistory, isEnabled: true, accent: AppTheme.knobGrey),
             ConsoleActionItem(id: "out", title: "OUT", systemImage: "folder.badge.plus", action: .chooseBatchOutputFolder, isEnabled: true, accent: nil),
             ConsoleActionItem(id: "single", title: "GO", systemImage: "record.circle", action: .convertSingle, isEnabled: engineController.state == .ready && !inferenceViewModel.isRunning, accent: AppTheme.knobOrange),
             ConsoleActionItem(id: "play", title: "PLAY", systemImage: "play.fill", action: .playPreview, isEnabled: inferenceViewModel.outputAudioURL != nil, accent: AppTheme.knobOrange),
@@ -2659,21 +2679,21 @@ private struct ConsoleSectionHeader: View {
             Spacer(minLength: 8)
 
             Button(action: action) {
-                Text("RESET")
-                    .font(.system(size: compact ? 8 : 9, weight: .bold, design: .monospaced))
+                Image(systemName: "arrow.counterclockwise")
+                    .font(.system(size: compact ? 10 : 11, weight: .semibold))
                     .foregroundStyle(Color.black.opacity(0.64))
-                    .padding(.horizontal, compact ? 8 : 10)
-                    .padding(.vertical, compact ? 4 : 5)
+                    .frame(width: compact ? 28 : 30, height: compact ? 28 : 30)
                     .background(
-                        Capsule(style: .continuous)
+                        Circle()
                             .fill(Color.white.opacity(0.28))
                             .overlay(
-                                Capsule(style: .continuous)
+                                Circle()
                                     .strokeBorder(Color.black.opacity(0.08), lineWidth: 1)
                             )
                     )
             }
             .buttonStyle(.plain)
+            .help("Reset to defaults")
         }
     }
 }
@@ -2989,6 +3009,7 @@ private struct ConsolePatchMenuCard: View {
                             }
                         }
                         .padding(.vertical, 2)
+                        .padding(.trailing, 14)
                     }
                     .frame(maxHeight: 280)
                 }
@@ -3753,7 +3774,7 @@ private struct QueueInspectorSheet: View {
                 Button("Close") {
                     dismiss()
                 }
-                .foregroundStyle(AppTheme.labelInk.opacity(0.82))
+                .buttonStyle(SheetHeaderActionButtonStyle())
                 .keyboardShortcut(.cancelAction)
             }
 
@@ -3946,6 +3967,397 @@ private struct QueueInspectorSheet: View {
                         .strokeBorder(Color.black.opacity(0.08), lineWidth: 1)
                 )
         )
+    }
+}
+
+private struct ResultHistorySheet: View {
+    let entries: [TaskHistoryEntry]
+    let onClear: () -> Void
+    let onLoadOutput: (TaskHistoryEntry) -> Void
+    let onPlayOutput: (TaskHistoryEntry) -> Void
+    let onRevealOutput: (TaskHistoryEntry) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var selectedKind: TaskHistoryKind?
+
+    private var filteredEntries: [TaskHistoryEntry] {
+        guard let selectedKind else { return entries }
+        return entries.filter { $0.kind == selectedKind }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("RES ARCHIVE")
+                        .font(.system(size: 18, weight: .bold, design: .monospaced))
+                        .foregroundStyle(AppTheme.labelInk)
+                    Text("\(filteredEntries.count) / \(entries.count) task records")
+                        .font(.system(size: 11, weight: .medium, design: .monospaced))
+                        .foregroundStyle(AppTheme.labelInk.opacity(0.76))
+                }
+
+                Spacer()
+
+                Button("CLEAR") {
+                    onClear()
+                }
+                .buttonStyle(SheetHeaderActionButtonStyle())
+                .disabled(entries.isEmpty)
+
+                Button("Close") {
+                    dismiss()
+                }
+                .buttonStyle(SheetHeaderActionButtonStyle())
+                .keyboardShortcut(.cancelAction)
+            }
+
+            historyFilterBar
+
+            if filteredEntries.isEmpty {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text(entries.isEmpty ? "NO HISTORY YET" : "NO MATCHING RECORDS")
+                        .font(.system(size: 13, weight: .bold, design: .monospaced))
+                        .foregroundStyle(AppTheme.valueInk)
+                    Text(entries.isEmpty ? "Single convert, batch convert, and live monitor events will appear here after they run." : "Switch filters to inspect single, batch, or live records.")
+                        .font(.system(size: 11, weight: .medium, design: .rounded))
+                        .foregroundStyle(AppTheme.labelInk.opacity(0.74))
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .padding(18)
+                .background(
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .fill(Color.white.opacity(0.32))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                .strokeBorder(Color.black.opacity(0.06), lineWidth: 1)
+                        )
+                )
+            } else {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 12) {
+                        ForEach(filteredEntries) { entry in
+                            ResultHistoryCard(
+                                entry: entry,
+                                onLoadOutput: {
+                                    onLoadOutput(entry)
+                                    dismiss()
+                                },
+                                onPlayOutput: {
+                                    onPlayOutput(entry)
+                                    dismiss()
+                                },
+                                onRevealOutput: { onRevealOutput(entry) }
+                            )
+                        }
+                    }
+                }
+            }
+        }
+        .padding(20)
+        .frame(minWidth: 760, minHeight: 540)
+        .background(AppTheme.consoleShellGradient)
+    }
+
+    private var historyFilterBar: some View {
+        HStack(spacing: 8) {
+            historyFilterChip(label: "ALL", count: entries.count, isSelected: selectedKind == nil) {
+                selectedKind = nil
+            }
+            historyFilterChip(label: "SINGLE", count: entries.filter { $0.kind == .single }.count, isSelected: selectedKind == .single) {
+                selectedKind = .single
+            }
+            historyFilterChip(label: "BATCH", count: entries.filter { $0.kind == .batch }.count, isSelected: selectedKind == .batch) {
+                selectedKind = .batch
+            }
+            historyFilterChip(label: "LIVE", count: entries.filter { $0.kind == .realtime }.count, isSelected: selectedKind == .realtime) {
+                selectedKind = .realtime
+            }
+            Spacer()
+        }
+    }
+
+    private func historyFilterChip(label: String, count: Int, isSelected: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                Text(label)
+                    .font(.system(size: 9, weight: .bold, design: .monospaced))
+                Text("\(count)")
+                    .font(.system(size: 8, weight: .bold, design: .monospaced))
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 3)
+                    .background(
+                        Capsule(style: .continuous)
+                            .fill(isSelected ? Color.white.opacity(0.26) : Color.black.opacity(0.06))
+                    )
+            }
+            .foregroundStyle(isSelected ? Color.white.opacity(0.92) : Color.black.opacity(0.64))
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .background(
+                Capsule(style: .continuous)
+                    .fill(isSelected ? AppTheme.knobBlue.opacity(0.92) : Color.white.opacity(0.32))
+                    .overlay(
+                        Capsule(style: .continuous)
+                            .strokeBorder(Color.black.opacity(isSelected ? 0.0 : 0.08), lineWidth: 1)
+                    )
+            )
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+private struct ResultHistoryCard: View {
+    let entry: TaskHistoryEntry
+    let onLoadOutput: () -> Void
+    let onPlayOutput: () -> Void
+    let onRevealOutput: () -> Void
+
+    private enum ArtifactState {
+        case file(TimeInterval?)
+        case directory
+        case missing
+        case unavailable
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline) {
+                HStack(spacing: 8) {
+                    Text(entry.kind.rawValue.uppercased())
+                        .font(.system(size: 10, weight: .bold, design: .monospaced))
+                        .foregroundStyle(kindAccent)
+                    Text(statusLabel)
+                        .font(.system(size: 9, weight: .bold, design: .monospaced))
+                        .foregroundStyle(statusAccent)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(
+                            Capsule(style: .continuous)
+                                .fill(statusAccent.opacity(0.14))
+                        )
+                }
+
+                Spacer()
+
+                Text(entry.timestamp.formatted(date: .abbreviated, time: .standard))
+                    .font(.system(size: 10, weight: .medium, design: .monospaced))
+                    .foregroundStyle(AppTheme.labelInk.opacity(0.68))
+            }
+
+            Text(entry.title.uppercased())
+                .font(.system(size: 13, weight: .bold, design: .monospaced))
+                .foregroundStyle(AppTheme.valueInk)
+
+            Text(entry.summary)
+                .font(.system(size: 11, weight: .medium, design: .rounded))
+                .foregroundStyle(AppTheme.labelInk.opacity(0.78))
+
+            VStack(alignment: .leading, spacing: 8) {
+                historyRow("MODEL", entry.modelName ?? "NONE")
+                historyRow("INPUT", entry.inputLabel ?? "NONE", copyValue: entry.inputPath)
+                historyRow("OUTPUT", entry.outputLabel ?? "NONE", copyValue: entry.outputPath)
+                historyRow("FILE", outputStateLabel, accent: outputStateAccent)
+                historyRow("LEN", outputDurationLabel)
+                historyRow("INDEX", entry.indexPath.map(lastPath) ?? "AUTO", copyValue: entry.indexPath)
+                historyRow("F0", entry.f0Method?.uppercased() ?? "—")
+                historyRow("SPK", entry.speakerID.map(String.init) ?? "—")
+                if let errorMessage = entry.errorMessage, !errorMessage.isEmpty {
+                    historyRow("ERROR", errorMessage, accent: AppTheme.knobOrange, copyValue: errorMessage)
+                }
+            }
+
+            HStack(spacing: 8) {
+                if case .file = outputState {
+                    buttonChip(label: "LOAD", action: onLoadOutput)
+                    buttonChip(label: "PLAY", action: onPlayOutput)
+                    buttonChip(label: "OPEN", action: onRevealOutput)
+                }
+                buttonChip(label: "COPY", action: copyRecord)
+            }
+        }
+        .padding(14)
+        .background(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(Color.white.opacity(0.34))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .strokeBorder(Color.black.opacity(0.06), lineWidth: 1)
+                )
+        )
+    }
+
+    private var kindAccent: Color {
+        switch entry.kind {
+        case .single:
+            return AppTheme.knobOrange
+        case .batch:
+            return AppTheme.knobBlue
+        case .realtime:
+            return AppTheme.ledGreen
+        }
+    }
+
+    private var outputState: ArtifactState {
+        guard let outputPath = entry.outputPath, !outputPath.isEmpty else { return .unavailable }
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: outputPath, isDirectory: &isDirectory) else {
+            return .missing
+        }
+        if isDirectory.boolValue {
+            return .directory
+        }
+        let url = URL(fileURLWithPath: outputPath)
+        guard let file = try? AVAudioFile(forReading: url) else {
+            return .file(nil)
+        }
+        let duration = Double(file.length) / file.processingFormat.sampleRate
+        return .file(duration)
+    }
+
+    private var outputStateLabel: String {
+        switch outputState {
+        case .file:
+            return "FOUND"
+        case .directory:
+            return "DIR"
+        case .missing:
+            return "MISSING"
+        case .unavailable:
+            return "N/A"
+        }
+    }
+
+    private var outputStateAccent: Color {
+        switch outputState {
+        case .file:
+            return AppTheme.ledGreen
+        case .directory:
+            return AppTheme.knobBlue
+        case .missing:
+            return AppTheme.knobOrange
+        case .unavailable:
+            return AppTheme.labelInk
+        }
+    }
+
+    private var outputDurationLabel: String {
+        switch outputState {
+        case let .file(duration):
+            guard let duration else { return "—" }
+            return timeLabel(duration)
+        case .directory, .missing, .unavailable:
+            return "—"
+        }
+    }
+
+    private var statusAccent: Color {
+        switch entry.status {
+        case .success:
+            return AppTheme.ledGreen
+        case .failure:
+            return AppTheme.knobOrange
+        case .info:
+            return AppTheme.knobBlue
+        }
+    }
+
+    private var statusLabel: String {
+        switch entry.status {
+        case .success:
+            return "OK"
+        case .failure:
+            return "ERR"
+        case .info:
+            return "INFO"
+        }
+    }
+
+    private func historyRow(_ label: String, _ value: String, accent: Color? = nil, copyValue: String? = nil) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 12) {
+            Text(label)
+                .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                .foregroundStyle((accent ?? AppTheme.labelInk).opacity(0.78))
+                .frame(width: 58, alignment: .leading)
+            Text(value)
+                .font(.system(size: 10, weight: .medium, design: .monospaced))
+                .foregroundStyle(AppTheme.valueInk)
+                .lineLimit(2)
+                .textSelection(.enabled)
+            Spacer(minLength: 0)
+            if let copyValue, !copyValue.isEmpty {
+                buttonChip(label: "COPY") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(copyValue, forType: .string)
+                }
+            }
+        }
+    }
+
+    private func buttonChip(label: String, action: @escaping () -> Void) -> some View {
+        Button(label, action: action)
+            .buttonStyle(.plain)
+            .font(.system(size: 8, weight: .bold, design: .monospaced))
+            .foregroundStyle(Color.black.opacity(0.64))
+            .padding(.horizontal, 8)
+            .padding(.vertical, 5)
+            .background(
+                Capsule(style: .continuous)
+                    .fill(Color.white.opacity(0.38))
+                    .overlay(
+                        Capsule(style: .continuous)
+                            .strokeBorder(Color.black.opacity(0.08), lineWidth: 1)
+                    )
+            )
+    }
+
+    private func copyRecord() {
+        let lines = [
+            "time: \(entry.timestamp.formatted(date: .abbreviated, time: .standard))",
+            "kind: \(entry.kind.rawValue)",
+            "status: \(entry.status.rawValue)",
+            "title: \(entry.title)",
+            "summary: \(entry.summary)",
+            "model: \(entry.modelName ?? "none")",
+            "input: \(entry.inputPath ?? entry.inputLabel ?? "none")",
+            "output: \(entry.outputPath ?? entry.outputLabel ?? "none")",
+            "index: \(entry.indexPath ?? "auto")",
+            "f0: \(entry.f0Method ?? "—")",
+            "speaker: \(entry.speakerID.map(String.init) ?? "—")",
+            "error: \(entry.errorMessage ?? "none")",
+        ]
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(lines.joined(separator: "\n"), forType: .string)
+    }
+
+    private func lastPath(_ path: String) -> String {
+        (path as NSString).lastPathComponent
+    }
+
+    private func timeLabel(_ value: TimeInterval) -> String {
+        guard value.isFinite else { return "0:00" }
+        let seconds = Int(value.rounded(.down))
+        let minutes = seconds / 60
+        let remainder = seconds % 60
+        return "\(minutes):" + String(format: "%02d", remainder)
+    }
+}
+
+private struct SheetHeaderActionButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 12, weight: .semibold, design: .rounded))
+            .foregroundStyle(Color.black.opacity(configuration.isPressed ? 0.82 : 0.68))
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .background(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(Color.white.opacity(configuration.isPressed ? 0.48 : 0.34))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .strokeBorder(Color.black.opacity(0.10), lineWidth: 1)
+                    )
+            )
     }
 }
 

@@ -45,6 +45,7 @@ final class AppState: ObservableObject {
     @Published var selectedSpeakerCount = 0
     @Published var appMemoryLabel = "—"
     @Published var engineMemoryLabel = "—"
+    @Published private(set) var taskHistory: [TaskHistoryEntry] = []
 
     let environment: AppEnvironment
     var engineController: EngineController
@@ -58,12 +59,15 @@ final class AppState: ObservableObject {
     var checkpointToolsViewModel: CheckpointToolsViewModel
 
     private let bridgeClient: RVCBridgeClient
+    private let userDefaults: UserDefaults
     private var hasBootstrapped = false
     private var cancellables: Set<AnyCancellable> = []
     private var navigationResetTask: Task<Void, Never>?
     private var toastDismissTask: Task<Void, Never>?
     private var metricsTask: Task<Void, Never>?
     private var busyDescriptors: [BusyScope: BusyDescriptor] = [:]
+    private let taskHistoryDefaultsKey = "local.r0.SwiftRVCMacClient.taskHistory.v1"
+    private let maxTaskHistoryCount = 80
 
     /// 清洗后端返回的模型摘要，过滤空白内容和 traceback 噪音。
     private func sanitizedModelInfoSummary(_ raw: String) -> String {
@@ -81,9 +85,11 @@ final class AppState: ObservableObject {
         engineController: EngineController? = nil,
         audioPlayer: AudioPreviewPlayer? = nil,
         bridgeClient: RVCBridgeClient? = nil,
-        startMetricsTask: Bool = true
+        startMetricsTask: Bool = true,
+        userDefaults: UserDefaults = .standard
     ) {
         self.environment = environment
+        self.userDefaults = userDefaults
 
         let resolvedEngineController = engineController ?? EngineController(environment: environment)
         let resolvedAudioPlayer = audioPlayer ?? AudioPreviewPlayer()
@@ -101,6 +107,7 @@ final class AppState: ObservableObject {
         self.assetAuditViewModel = AssetAuditViewModel(bridgeClient: resolvedBridgeClient)
         self.onnxViewModel = ONNXViewModel(bridgeClient: resolvedBridgeClient)
         self.checkpointToolsViewModel = CheckpointToolsViewModel(bridgeClient: resolvedBridgeClient)
+        self.taskHistory = Self.loadTaskHistory(from: userDefaults, key: taskHistoryDefaultsKey)
 
         batchViewModel.outputDirectoryURL = environment.defaultBatchOutputDirectory
         uvrViewModel.vocalOutputDirectoryURL = environment.defaultBatchOutputDirectory.appendingPathComponent("uvr-vocals", isDirectory: true)
@@ -111,6 +118,7 @@ final class AppState: ObservableObject {
             .sink { [weak self] summary in
                 self?.lastExecutionSummary = summary
                 self?.presentToast(message: summary, style: .success)
+                self?.recordSingleTaskHistory(status: .success, summary: summary)
             }
             .store(in: &cancellables)
 
@@ -119,6 +127,7 @@ final class AppState: ObservableObject {
             .sink { [weak self] summary in
                 self?.lastExecutionSummary = summary
                 self?.presentToast(message: summary, style: .success)
+                self?.recordBatchTaskHistory(status: .success, summary: summary)
             }
             .store(in: &cancellables)
 
@@ -159,6 +168,7 @@ final class AppState: ObservableObject {
             .sink { [weak self] message in
                 self?.statusMessage = message
                 self?.presentToast(message: message, style: .error)
+                self?.recordSingleTaskHistory(status: .failure, summary: message)
             }
             .store(in: &cancellables)
 
@@ -167,6 +177,7 @@ final class AppState: ObservableObject {
             .sink { [weak self] message in
                 self?.statusMessage = message
                 self?.presentToast(message: message, style: .error)
+                self?.recordBatchTaskHistory(status: .failure, summary: message)
             }
             .store(in: &cancellables)
 
@@ -207,6 +218,7 @@ final class AppState: ObservableObject {
             .sink { [weak self] message in
                 self?.statusMessage = message
                 self?.presentToast(message: message, style: .error)
+                self?.recordRealtimeTaskHistory(status: .failure, summary: message)
             }
             .store(in: &cancellables)
 
@@ -215,6 +227,7 @@ final class AppState: ObservableObject {
             .sink { [weak self] summary in
                 self?.statusMessage = summary
                 self?.presentToast(message: summary, style: .info)
+                self?.recordRealtimeTaskHistory(status: .info, summary: summary)
             }
             .store(in: &cancellables)
 
@@ -462,6 +475,9 @@ final class AppState: ObservableObject {
         defer { endBusy(.modelSelection) }
 
         do {
+            if let currentModel = selectedModelName, currentModel != name {
+                _ = try await bridgeClient.unloadModel()
+            }
             let result = try await bridgeClient.selectModel(name: name)
             let sanitizedSummary = sanitizedModelInfoSummary(result.modelInfoSummary)
             selectedModelName = result.modelName
@@ -596,6 +612,35 @@ final class AppState: ObservableObject {
         metricsTask?.cancel()
     }
 
+    /// 清空已持久化的任务历史，供 RES 面板快速重置。
+    func clearTaskHistory() {
+        taskHistory = []
+        persistTaskHistory()
+    }
+
+    /// 将历史中的输出重新载入预览播放器，方便直接回听旧产物。
+    func loadTaskHistoryOutput(_ entry: TaskHistoryEntry) {
+        guard let outputPath = entry.outputPath else { return }
+        let url = URL(fileURLWithPath: outputPath)
+        guard FileManager.default.fileExists(atPath: url.path) else { return }
+        inferenceViewModel.outputAudioURL = url
+        audioPlayer.load(url: url)
+    }
+
+    /// 将历史中的产物重新载入预览播放器并立即开始播放。
+    func playTaskHistoryOutput(_ entry: TaskHistoryEntry) {
+        loadTaskHistoryOutput(entry)
+        audioPlayer.play()
+    }
+
+    /// 在 Finder 中定位历史记录关联的产物文件。
+    func revealTaskHistoryOutput(_ entry: TaskHistoryEntry) {
+        guard let outputPath = entry.outputPath else { return }
+        let url = URL(fileURLWithPath: outputPath)
+        guard FileManager.default.fileExists(atPath: url.path) else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([url])
+    }
+
     /// 周期轮询应用、引擎、模型和索引的体积标签。
     private func startMetricsPolling() {
         metricsTask?.cancel()
@@ -624,6 +669,120 @@ final class AppState: ObservableObject {
                 try? await Task.sleep(for: .seconds(2))
             }
         }
+    }
+
+    /// 记录单文件推理任务结果，并将其持久化到 RES 历史。
+    private func recordSingleTaskHistory(status: TaskHistoryStatus, summary: String) {
+        appendTaskHistory(
+            TaskHistoryEntry(
+                id: UUID(),
+                timestamp: Date(),
+                kind: .single,
+                status: status,
+                title: status == .failure ? "Single convert failed" : "Single convert",
+                summary: summary,
+                modelName: selectedModelName,
+                inputLabel: inferenceViewModel.inputFileURL?.lastPathComponent,
+                inputPath: inferenceViewModel.inputFileURL?.path,
+                outputLabel: status == .success ? inferenceViewModel.outputAudioURL?.lastPathComponent : nil,
+                outputPath: status == .success ? inferenceViewModel.outputAudioURL?.path : nil,
+                indexPath: effectiveSelectedIndexPath,
+                f0Method: inferenceViewModel.f0Method.rawValue,
+                speakerID: inferenceViewModel.speakerID,
+                errorMessage: status == .failure ? inferenceViewModel.errorMessage ?? summary : nil
+            )
+        )
+    }
+
+    /// 记录批处理任务结果，并保留目录级输入输出上下文。
+    private func recordBatchTaskHistory(status: TaskHistoryStatus, summary: String) {
+        let batchInputLabel: String?
+        let batchInputPath: String?
+        if let directory = batchViewModel.inputDirectoryURL {
+            batchInputLabel = directory.lastPathComponent
+            batchInputPath = directory.path
+        } else if let firstFile = batchViewModel.inputFileURLs.first {
+            batchInputLabel = batchViewModel.inputFileURLs.count == 1 ? firstFile.lastPathComponent : "\(batchViewModel.inputFileURLs.count) files"
+            batchInputPath = batchViewModel.inputFileURLs.map(\.path).joined(separator: "\n")
+        } else {
+            batchInputLabel = nil
+            batchInputPath = nil
+        }
+
+        appendTaskHistory(
+            TaskHistoryEntry(
+                id: UUID(),
+                timestamp: Date(),
+                kind: .batch,
+                status: status,
+                title: status == .failure ? "Batch convert failed" : "Batch convert",
+                summary: summary,
+                modelName: selectedModelName,
+                inputLabel: batchInputLabel,
+                inputPath: batchInputPath,
+                outputLabel: batchViewModel.outputDirectoryURL?.lastPathComponent,
+                outputPath: batchViewModel.outputDirectoryURL?.path,
+                indexPath: batchViewModel.effectiveIndexPath,
+                f0Method: batchViewModel.f0Method.rawValue,
+                speakerID: batchViewModel.speakerID,
+                errorMessage: status == .failure ? batchViewModel.errorMessage ?? summary : nil
+            )
+        )
+    }
+
+    /// 记录实时链路的启动、停止与错误事件，便于回顾设备和模型上下文。
+    private func recordRealtimeTaskHistory(status: TaskHistoryStatus, summary: String) {
+        let inputLabel = realtimeViewModel.selectedInputDevice
+        let outputLabel = realtimeViewModel.selectedOutputDevice
+        let ioPath = [inputLabel, outputLabel]
+            .compactMap { $0 }
+            .joined(separator: " -> ")
+
+        appendTaskHistory(
+            TaskHistoryEntry(
+                id: UUID(),
+                timestamp: Date(),
+                kind: .realtime,
+                status: status,
+                title: realtimeViewModel.isRunning ? "Live monitor active" : "Live monitor update",
+                summary: summary,
+                modelName: selectedModelName,
+                inputLabel: inputLabel,
+                inputPath: ioPath.isEmpty ? nil : ioPath,
+                outputLabel: outputLabel,
+                outputPath: nil,
+                indexPath: effectiveSelectedIndexPath,
+                f0Method: inferenceViewModel.f0Method.rawValue,
+                speakerID: inferenceViewModel.speakerID,
+                errorMessage: status == .failure ? realtimeViewModel.lastError ?? summary : nil
+            )
+        )
+    }
+
+    /// 将任务历史插入队首，并同步写入本地持久化存储。
+    private func appendTaskHistory(_ entry: TaskHistoryEntry) {
+        taskHistory.insert(entry, at: 0)
+        if taskHistory.count > maxTaskHistoryCount {
+            taskHistory = Array(taskHistory.prefix(maxTaskHistoryCount))
+        }
+        persistTaskHistory()
+    }
+
+    /// 将当前内存中的任务历史写回 UserDefaults。
+    private func persistTaskHistory() {
+        guard let data = try? JSONEncoder().encode(taskHistory) else { return }
+        userDefaults.set(data, forKey: taskHistoryDefaultsKey)
+    }
+
+    /// 从 UserDefaults 中恢复历史任务列表，兼容首次启动或损坏数据。
+    private static func loadTaskHistory(from defaults: UserDefaults, key: String) -> [TaskHistoryEntry] {
+        guard
+            let data = defaults.data(forKey: key),
+            let entries = try? JSONDecoder().decode([TaskHistoryEntry].self, from: data)
+        else {
+            return []
+        }
+        return entries
     }
 
     /// 读取当前 app 进程的驻留内存大小。

@@ -20,6 +20,9 @@ protocol RVCBridgeClient {
     /// Refreshes the available UVR model catalog from the backend.
     func refreshUVRModels() async throws -> UVRModelCatalog
 
+    /// Explicitly releases UVR-side runtime memory and cache state.
+    func releaseUVRMemory() async throws -> MemoryReleaseResult
+
     /// Dispatches a UVR separation request.
     func convertUVR(_ request: UVRRequest) async throws -> UVRResult
 
@@ -134,6 +137,12 @@ final class PythonRVCBridgeClient: RVCBridgeClient {
     func refreshUVRModels() async throws -> UVRModelCatalog {
         let data = try await run(command: "uvr-models", arguments: [])
         return try decode(UVRModelCatalog.self, from: data)
+    }
+
+    /// Explicitly releases UVR-side runtime memory and cache state.
+    func releaseUVRMemory() async throws -> MemoryReleaseResult {
+        let data = try await run(command: "uvr-release", arguments: [])
+        return try decode(MemoryReleaseResult.self, from: data)
     }
 
     /// Dispatches a UVR separation request.
