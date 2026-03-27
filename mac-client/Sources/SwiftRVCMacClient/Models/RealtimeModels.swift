@@ -5,6 +5,26 @@ enum RealtimeMonitorMode: String, CaseIterable, Codable, Identifiable {
     case outputConverted = "vc"
 
     var id: String { rawValue }
+
+    /// Returns the short label shown in route controls.
+    var displayName: String {
+        switch self {
+        case .inputMonitor:
+            return "INPUT"
+        case .outputConverted:
+            return "VC"
+        }
+    }
+
+    /// Returns a short explanation of what the listener will hear.
+    var shortDescription: String {
+        switch self {
+        case .inputMonitor:
+            return "Hear the dry microphone signal."
+        case .outputConverted:
+            return "Hear the converted voice output."
+        }
+    }
 }
 
 enum SampleRateMode: String, CaseIterable, Codable, Identifiable {
@@ -12,6 +32,26 @@ enum SampleRateMode: String, CaseIterable, Codable, Identifiable {
     case device = "sr_device"
 
     var id: String { rawValue }
+
+    /// Returns the display label shown in the realtime sample-rate picker.
+    var displayName: String {
+        switch self {
+        case .model:
+            return "MODEL"
+        case .device:
+            return "DEVICE"
+        }
+    }
+
+    /// Returns a short explanation of how realtime sample rate is chosen.
+    var shortDescription: String {
+        switch self {
+        case .model:
+            return "Use the loaded model target sample rate."
+        case .device:
+            return "Follow the current audio device sample rate."
+        }
+    }
 }
 
 struct RealtimeDeviceSnapshot: Codable {

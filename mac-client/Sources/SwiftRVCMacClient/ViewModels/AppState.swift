@@ -46,6 +46,12 @@ final class AppState: ObservableObject {
     @Published var appMemoryLabel = "—"
     @Published var engineMemoryLabel = "—"
     @Published private(set) var taskHistory: [TaskHistoryEntry] = []
+    @Published private(set) var backgroundAudioURL: URL?
+    @Published var isBackgroundMixEnabled = false
+    @Published var backgroundMixLevel = 0.34
+    @Published private(set) var isPreparingBackgroundMix = false
+    @Published private(set) var isPersistingBackgroundMix = false
+    @Published private(set) var mixedOutputURL: URL?
 
     let environment: AppEnvironment
     var engineController: EngineController
@@ -59,15 +65,22 @@ final class AppState: ObservableObject {
     var checkpointToolsViewModel: CheckpointToolsViewModel
 
     private let bridgeClient: RVCBridgeClient
+    private let managedOutputStorage: ManagedOutputStorage
+    private let audioCompositeService: AudioCompositeService
     private let userDefaults: UserDefaults
     private var hasBootstrapped = false
     private var cancellables: Set<AnyCancellable> = []
     private var navigationResetTask: Task<Void, Never>?
     private var toastDismissTask: Task<Void, Never>?
     private var metricsTask: Task<Void, Never>?
+    private var backgroundPreviewRefreshTask: Task<Void, Never>?
     private var busyDescriptors: [BusyScope: BusyDescriptor] = [:]
     private let taskHistoryDefaultsKey = "local.r0.SwiftRVCMacClient.taskHistory.v1"
     private let maxTaskHistoryCount = 80
+    private var pendingSingleReservation: ManagedTaskOutputReservation?
+    private var pendingBatchReservation: ManagedTaskOutputReservation?
+    private var pendingUVRReservation: ManagedTaskOutputReservation?
+    private var currentBackgroundPreviewURL: URL?
 
     /// 清洗后端返回的模型摘要，过滤空白内容和 traceback 噪音。
     private func sanitizedModelInfoSummary(_ raw: String) -> String {
@@ -100,6 +113,8 @@ final class AppState: ObservableObject {
         self.engineController = resolvedEngineController
         self.audioPlayer = resolvedAudioPlayer
         self.bridgeClient = resolvedBridgeClient
+        self.managedOutputStorage = ManagedOutputStorage(environment: environment)
+        self.audioCompositeService = AudioCompositeService()
         self.inferenceViewModel = InferenceViewModel(bridgeClient: resolvedBridgeClient, audioPlayer: resolvedAudioPlayer)
         self.batchViewModel = BatchViewModel(bridgeClient: resolvedBridgeClient)
         self.realtimeViewModel = RealtimeViewModel(bridgeClient: resolvedBridgeClient)
@@ -108,10 +123,12 @@ final class AppState: ObservableObject {
         self.onnxViewModel = ONNXViewModel(bridgeClient: resolvedBridgeClient)
         self.checkpointToolsViewModel = CheckpointToolsViewModel(bridgeClient: resolvedBridgeClient)
         self.taskHistory = Self.loadTaskHistory(from: userDefaults, key: taskHistoryDefaultsKey)
+        try? managedOutputStorage.prepareBaseDirectories()
+        cleanupBackgroundPreviewCache()
 
         batchViewModel.outputDirectoryURL = environment.defaultBatchOutputDirectory
-        uvrViewModel.vocalOutputDirectoryURL = environment.defaultBatchOutputDirectory.appendingPathComponent("uvr-vocals", isDirectory: true)
-        uvrViewModel.instrumentalOutputDirectoryURL = environment.defaultBatchOutputDirectory.appendingPathComponent("uvr-instrumentals", isDirectory: true)
+        uvrViewModel.vocalOutputDirectoryURL = environment.defaultUVROutputDirectory.appendingPathComponent("vocals", isDirectory: true)
+        uvrViewModel.instrumentalOutputDirectoryURL = environment.defaultUVROutputDirectory.appendingPathComponent("instrumentals", isDirectory: true)
 
         inferenceViewModel.$lastRunSummary
             .compactMap { $0 }
@@ -119,6 +136,12 @@ final class AppState: ObservableObject {
                 self?.lastExecutionSummary = summary
                 self?.presentToast(message: summary, style: .success)
                 self?.recordSingleTaskHistory(status: .success, summary: summary)
+            }
+            .store(in: &cancellables)
+
+        inferenceViewModel.$outputAudioURL
+            .sink { [weak self] url in
+                self?.refreshBackgroundContext(forForegroundURL: url)
             }
             .store(in: &cancellables)
 
@@ -136,6 +159,7 @@ final class AppState: ObservableObject {
             .sink { [weak self] summary in
                 self?.lastExecutionSummary = summary
                 self?.presentToast(message: summary, style: .success)
+                self?.recordUVRTaskHistory(status: .success, summary: summary)
             }
             .store(in: &cancellables)
 
@@ -186,6 +210,7 @@ final class AppState: ObservableObject {
             .sink { [weak self] message in
                 self?.statusMessage = message
                 self?.presentToast(message: message, style: .error)
+                self?.recordUVRTaskHistory(status: .failure, summary: message)
             }
             .store(in: &cancellables)
 
@@ -378,6 +403,10 @@ final class AppState: ObservableObject {
     /// 设置单文件输入音频，保留批处理输入队列不变。
     func setSingleInputFileURL(_ url: URL?) {
         inferenceViewModel.inputFileURL = url
+        guard let url else { return }
+        let message = "Loaded file \(url.lastPathComponent). Ready for single convert."
+        statusMessage = message
+        presentToast(message: message, style: .success)
     }
 
     /// 设置批处理输入目录，并清理互斥的显式文件队列与单文件输入。
@@ -396,6 +425,15 @@ final class AppState: ObservableObject {
             batchViewModel.inputDirectoryURL = nil
         }
         inferenceViewModel.inputFileURL = urls.count == 1 ? urls[0] : nil
+        guard !urls.isEmpty else { return }
+        let message: String
+        if urls.count == 1, let first = urls.first {
+            message = "Loaded 1 file: \(first.lastPathComponent). Single convert is ready."
+        } else {
+            message = "Loaded \(urls.count) files into the batch queue."
+        }
+        statusMessage = message
+        presentToast(message: message, style: .success)
     }
 
     /// 设置共享自定义索引文件，并覆盖两个推理面板的当前索引来源。
@@ -530,21 +568,31 @@ final class AppState: ObservableObject {
 
         do {
             let result = try await bridgeClient.unloadModel()
-            selectedModelName = nil
-            modelInfoSummary = L10n.tr("status.model_info.initial")
-            indexPaths = result.indexPaths
-            selectedSpeakerCount = result.speakerCount
-            selectedModelSizeLabel = "—"
-            selectedIndexSizeLabel = "—"
-            inferenceViewModel.selectedIndexPath = nil
-            inferenceViewModel.customIndexURL = nil
-            inferenceViewModel.f0FileURL = nil
-            inferenceViewModel.speakerID = 0
-            batchViewModel.selectedIndexPath = nil
-            batchViewModel.customIndexURL = nil
-            batchViewModel.speakerID = 0
+            resetLoadedModelState(indexPaths: result.indexPaths, speakerCount: result.speakerCount)
             statusMessage = result.unloaded ? "Model unloaded." : "Model unload returned no-op."
             presentToast(message: statusMessage, style: .info)
+            await refreshRealtimeContext()
+        } catch {
+            statusMessage = error.localizedDescription
+            presentToast(message: error.localizedDescription, style: .error)
+        }
+    }
+
+    /// 统一释放模型、实时与 UVR 占用的运行时缓存。
+    func releaseRuntimeCaches() async {
+        guard engineController.state == .ready else {
+            statusMessage = L10n.tr("status.engine.refresh_first")
+            presentToast(message: statusMessage, style: .info)
+            return
+        }
+
+        do {
+            let result = try await bridgeClient.releaseRuntimeMemory()
+            resetLoadedModelState(indexPaths: indexPaths, speakerCount: 0)
+            uvrViewModel.errorMessage = nil
+            uvrViewModel.outputMessage = ""
+            statusMessage = result.message
+            presentToast(message: result.message, style: .info)
             await refreshRealtimeContext()
         } catch {
             statusMessage = error.localizedDescription
@@ -568,6 +616,23 @@ final class AppState: ObservableObject {
     /// 打开模型权重目录。
     func openWeightsDirectory() {
         openDirectory(environment.weightsDirectory, label: L10n.tr("status.folder.model_weights"))
+    }
+
+    /// 清空当前已加载模型相关的本地派生状态。
+    private func resetLoadedModelState(indexPaths: [String], speakerCount: Int) {
+        selectedModelName = nil
+        modelInfoSummary = L10n.tr("status.model_info.initial")
+        self.indexPaths = indexPaths
+        selectedSpeakerCount = speakerCount
+        selectedModelSizeLabel = "—"
+        selectedIndexSizeLabel = "—"
+        inferenceViewModel.selectedIndexPath = nil
+        inferenceViewModel.customIndexURL = nil
+        inferenceViewModel.f0FileURL = nil
+        inferenceViewModel.speakerID = 0
+        batchViewModel.selectedIndexPath = nil
+        batchViewModel.customIndexURL = nil
+        batchViewModel.speakerID = 0
     }
 
     /// 打开索引文件目录。
@@ -609,19 +674,146 @@ final class AppState: ObservableObject {
     }
 
     deinit {
+        backgroundPreviewRefreshTask?.cancel()
         metricsTask?.cancel()
     }
 
-    /// 清空已持久化的任务历史，供 RES 面板快速重置。
-    func clearTaskHistory() {
-        taskHistory = []
-        persistTaskHistory()
+    /// 按分类清空任务历史，并同步删除这些历史关联的真实产物。
+    func clearTaskHistory(kind: TaskHistoryKind? = nil) {
+        let entriesToDelete = kind.map { selectedKind in
+            taskHistory.filter { $0.kind == selectedKind }
+        } ?? taskHistory
+        deleteTaskHistoryEntries(entriesToDelete)
+    }
+
+    /// 删除一条 RES 历史及其关联的产物目录。
+    func deleteTaskHistoryEntry(_ entry: TaskHistoryEntry) {
+        deleteTaskHistoryEntries([entry])
+    }
+
+    /// 预留统一存储目录并执行单文件变声，确保输出不再落到 engine 目录中。
+    func runSingleConvert() async {
+        guard let inputFileURL = inferenceViewModel.inputFileURL else {
+            await inferenceViewModel.convert(
+                selectedModelName: selectedModelName,
+                outputDirectoryURL: environment.defaultSingleOutputDirectory
+            )
+            return
+        }
+
+        do {
+            let reservation = try managedOutputStorage.reserveSingleOutput(for: inputFileURL)
+            pendingSingleReservation = reservation
+            await inferenceViewModel.convert(
+                selectedModelName: selectedModelName,
+                outputDirectoryURL: reservation.primaryOutputDirectoryURL
+            )
+        } catch {
+            inferenceViewModel.errorMessage = error.localizedDescription
+        }
+    }
+
+    /// 预留统一存储目录并执行批处理变声。
+    func runBatchConvert() async {
+        do {
+            let reservation = try managedOutputStorage.reserveBatchOutput()
+            pendingBatchReservation = reservation
+            batchViewModel.outputDirectoryURL = reservation.primaryOutputDirectoryURL
+            await batchViewModel.convert(selectedModelName: selectedModelName)
+        } catch {
+            batchViewModel.errorMessage = error.localizedDescription
+        }
+    }
+
+    /// 预留统一存储目录并执行 UVR 分离，统一收口 vocals / instrumentals 目录。
+    func runUVRConvert() async {
+        let inputLabel = uvrViewModel.inputDirectoryURL?.lastPathComponent
+            ?? uvrViewModel.inputFileURLs.first?.deletingPathExtension().lastPathComponent
+        do {
+            let reservation = try managedOutputStorage.reserveUVROutputs(inputLabel: inputLabel)
+            pendingUVRReservation = reservation
+            uvrViewModel.vocalOutputDirectoryURL = reservation.primaryOutputDirectoryURL
+            uvrViewModel.instrumentalOutputDirectoryURL = reservation.secondaryOutputDirectoryURL
+            await uvrViewModel.convert()
+        } catch {
+            uvrViewModel.errorMessage = error.localizedDescription
+        }
+    }
+
+    /// 切换背景声预览，并在可用时把 UVR instrumental 合成进当前波形试听。
+    func toggleBackgroundMix() async {
+        let nextValue = !isBackgroundMixEnabled
+        guard nextValue else {
+            backgroundPreviewRefreshTask?.cancel()
+            isBackgroundMixEnabled = false
+            cleanupBackgroundPreviewCache()
+            reloadForegroundPreview()
+            return
+        }
+
+        guard let backgroundAudioURL else {
+            let message = "No related background stem is available. Run UVR first, then convert from the vocal stem."
+            statusMessage = message
+            presentToast(message: message, style: .info)
+            return
+        }
+
+        isBackgroundMixEnabled = true
+        await applyBackgroundPreviewIfNeeded(backgroundAudioURL: backgroundAudioURL)
+    }
+
+    /// 更新背景声混音音量，并在短暂防抖后重建试听结果，避免拖动滑杆时频繁打断播放。
+    func setBackgroundMixLevel(_ value: Double) {
+        backgroundMixLevel = min(max(value, 0), 1)
+        guard isBackgroundMixEnabled else { return }
+        scheduleBackgroundPreviewRefresh(after: .milliseconds(180))
+    }
+
+    /// 将当前变声产物与其关联的背景声一键合并，并把合并结果登记到 RES 历史中。
+    func mergeBackgroundMix() async {
+        guard let foregroundURL = inferenceViewModel.outputAudioURL else {
+            presentToast(message: "Convert a file before merging background audio.", style: .info)
+            return
+        }
+        guard let backgroundAudioURL else {
+            presentToast(message: "No background stem is available for the current output.", style: .info)
+            return
+        }
+
+        isPersistingBackgroundMix = true
+        defer { isPersistingBackgroundMix = false }
+
+        do {
+            let outputDirectoryURL = inferenceViewModel.outputDirectoryURL ?? environment.defaultSingleOutputDirectory
+            let mergedURL = try await audioCompositeService.exportMergedOutput(
+                foregroundURL: foregroundURL,
+                backgroundURL: backgroundAudioURL,
+                outputDirectoryURL: outputDirectoryURL,
+                backgroundGain: Float(backgroundMixLevel)
+            )
+            let shouldResumePlayback = audioPlayer.isPlaying
+            let progress = audioPlayer.playbackProgress
+            mixedOutputURL = mergedURL
+            attachMixedOutputArtifact(mergedURL, foregroundURL: foregroundURL)
+            isBackgroundMixEnabled = true
+            audioPlayer.load(
+                url: mergedURL,
+                waveformSourceURL: foregroundURL,
+                restoreProgress: progress,
+                autoPlay: shouldResumePlayback,
+                preserveWaveformWhileLoading: true
+            )
+            statusMessage = "Background merged and loaded."
+            presentToast(message: statusMessage, style: .success)
+        } catch {
+            statusMessage = error.localizedDescription
+            presentToast(message: error.localizedDescription, style: .error)
+        }
     }
 
     /// 将历史中的输出重新载入预览播放器，方便直接回听旧产物。
     func loadTaskHistoryOutput(_ entry: TaskHistoryEntry) {
-        guard let outputPath = entry.outputPath else { return }
-        let url = URL(fileURLWithPath: outputPath)
+        guard let url = primaryPlayableURL(for: entry) else { return }
         guard FileManager.default.fileExists(atPath: url.path) else { return }
         inferenceViewModel.outputAudioURL = url
         audioPlayer.load(url: url)
@@ -635,10 +827,14 @@ final class AppState: ObservableObject {
 
     /// 在 Finder 中定位历史记录关联的产物文件。
     func revealTaskHistoryOutput(_ entry: TaskHistoryEntry) {
-        guard let outputPath = entry.outputPath else { return }
-        let url = URL(fileURLWithPath: outputPath)
-        guard FileManager.default.fileExists(atPath: url.path) else { return }
-        NSWorkspace.shared.activateFileViewerSelecting([url])
+        if let url = primaryPlayableURL(for: entry), FileManager.default.fileExists(atPath: url.path) {
+            NSWorkspace.shared.activateFileViewerSelecting([url])
+            return
+        }
+        guard let directoryPath = entry.taskDirectoryPath else { return }
+        let directoryURL = URL(fileURLWithPath: directoryPath)
+        guard FileManager.default.fileExists(atPath: directoryURL.path) else { return }
+        NSWorkspace.shared.open(directoryURL)
     }
 
     /// 周期轮询应用、引擎、模型和索引的体积标签。
@@ -673,9 +869,14 @@ final class AppState: ObservableObject {
 
     /// 记录单文件推理任务结果，并将其持久化到 RES 历史。
     private func recordSingleTaskHistory(status: TaskHistoryStatus, summary: String) {
+        let reservation = pendingSingleReservation
+        let outputArtifacts = status == .success ? artifacts(
+            from: inferenceViewModel.outputAudioURL.map { [$0] } ?? [],
+            role: .singleOutput
+        ) : []
         appendTaskHistory(
             TaskHistoryEntry(
-                id: UUID(),
+                id: reservation?.taskID ?? UUID(),
                 timestamp: Date(),
                 kind: .single,
                 status: status,
@@ -689,13 +890,18 @@ final class AppState: ObservableObject {
                 indexPath: effectiveSelectedIndexPath,
                 f0Method: inferenceViewModel.f0Method.rawValue,
                 speakerID: inferenceViewModel.speakerID,
-                errorMessage: status == .failure ? inferenceViewModel.errorMessage ?? summary : nil
+                errorMessage: status == .failure ? inferenceViewModel.errorMessage ?? summary : nil,
+                taskDirectoryPath: reservation?.taskDirectoryURL.path ?? inferenceViewModel.outputDirectoryURL?.path,
+                outputArtifacts: outputArtifacts,
+                sourceTaskID: sourceTaskID(forInputPath: inferenceViewModel.inputFileURL?.path)
             )
         )
+        pendingSingleReservation = nil
     }
 
     /// 记录批处理任务结果，并保留目录级输入输出上下文。
     private func recordBatchTaskHistory(status: TaskHistoryStatus, summary: String) {
+        let reservation = pendingBatchReservation
         let batchInputLabel: String?
         let batchInputPath: String?
         if let directory = batchViewModel.inputDirectoryURL {
@@ -711,7 +917,7 @@ final class AppState: ObservableObject {
 
         appendTaskHistory(
             TaskHistoryEntry(
-                id: UUID(),
+                id: reservation?.taskID ?? UUID(),
                 timestamp: Date(),
                 kind: .batch,
                 status: status,
@@ -725,9 +931,49 @@ final class AppState: ObservableObject {
                 indexPath: batchViewModel.effectiveIndexPath,
                 f0Method: batchViewModel.f0Method.rawValue,
                 speakerID: batchViewModel.speakerID,
-                errorMessage: status == .failure ? batchViewModel.errorMessage ?? summary : nil
+                errorMessage: status == .failure ? batchViewModel.errorMessage ?? summary : nil,
+                taskDirectoryPath: reservation?.taskDirectoryURL.path ?? batchViewModel.outputDirectoryURL?.path,
+                outputArtifacts: status == .success ? artifacts(from: batchViewModel.outputFileURLs, role: .batchOutput) : [],
+                sourceTaskID: nil
             )
         )
+        pendingBatchReservation = nil
+    }
+
+    /// 记录 UVR 成功或失败任务，并保留 vocals/instrumentals 的配对关联。
+    private func recordUVRTaskHistory(status: TaskHistoryStatus, summary: String) {
+        let reservation = pendingUVRReservation
+        let primaryOutput = uvrViewModel.vocalOutputFileURLs.first ?? uvrViewModel.vocalOutputDirectoryURL
+        let artifacts = status == .success
+            ? artifacts(from: uvrViewModel.vocalOutputFileURLs, role: .uvrVocal)
+            + artifacts(from: uvrViewModel.instrumentalOutputFileURLs, role: .uvrInstrumental)
+            : []
+
+        appendTaskHistory(
+            TaskHistoryEntry(
+                id: reservation?.taskID ?? UUID(),
+                timestamp: Date(),
+                kind: .uvr,
+                status: status,
+                title: status == .failure ? "UVR separate failed" : "UVR separate",
+                summary: summary,
+                modelName: uvrViewModel.selectedModelName,
+                inputLabel: uvrViewModel.inputDirectoryURL?.lastPathComponent
+                    ?? uvrViewModel.inputFileURLs.first?.lastPathComponent,
+                inputPath: uvrViewModel.inputDirectoryURL?.path
+                    ?? joinedPaths(uvrViewModel.inputFileURLs.map(\.path)),
+                outputLabel: primaryOutput?.lastPathComponent,
+                outputPath: primaryOutput?.path,
+                indexPath: nil,
+                f0Method: nil,
+                speakerID: nil,
+                errorMessage: status == .failure ? uvrViewModel.errorMessage ?? summary : nil,
+                taskDirectoryPath: reservation?.taskDirectoryURL.path,
+                outputArtifacts: artifacts,
+                sourceTaskID: nil
+            )
+        )
+        pendingUVRReservation = nil
     }
 
     /// 记录实时链路的启动、停止与错误事件，便于回顾设备和模型上下文。
@@ -754,7 +1000,10 @@ final class AppState: ObservableObject {
                 indexPath: effectiveSelectedIndexPath,
                 f0Method: inferenceViewModel.f0Method.rawValue,
                 speakerID: inferenceViewModel.speakerID,
-                errorMessage: status == .failure ? realtimeViewModel.lastError ?? summary : nil
+                errorMessage: status == .failure ? realtimeViewModel.lastError ?? summary : nil,
+                taskDirectoryPath: nil,
+                outputArtifacts: [],
+                sourceTaskID: nil
             )
         )
     }
@@ -766,6 +1015,47 @@ final class AppState: ObservableObject {
             taskHistory = Array(taskHistory.prefix(maxTaskHistoryCount))
         }
         persistTaskHistory()
+    }
+
+    /// 批量删除历史记录，并清理任务目录、文件以及播放器/背景声的失效引用。
+    private func deleteTaskHistoryEntries(_ entries: [TaskHistoryEntry]) {
+        guard !entries.isEmpty else { return }
+
+        let fileManager = FileManager.default
+        let idsToDelete = Set(entries.map(\.id))
+        let pathsToDelete = Set(entries.flatMap(storagePaths(for:)))
+        let loadedURLPath = audioPlayer.loadedURL?.path
+        let currentOutputPath = inferenceViewModel.outputAudioURL?.path
+        let currentMixedPath = mixedOutputURL?.path
+        let currentBackgroundPath = backgroundAudioURL?.path
+
+        for path in pathsToDelete.sorted(by: { $0.count > $1.count }) {
+            guard fileManager.fileExists(atPath: path) else { continue }
+            try? fileManager.removeItem(atPath: path)
+        }
+
+        taskHistory.removeAll { idsToDelete.contains($0.id) }
+        persistTaskHistory()
+
+        if let loadedURLPath, pathsToDelete.contains(where: { loadedURLPath.hasPrefix($0) || loadedURLPath == $0 }) {
+            audioPlayer.load(url: nil)
+        }
+        if let currentOutputPath, pathsToDelete.contains(where: { currentOutputPath.hasPrefix($0) || currentOutputPath == $0 }) {
+            inferenceViewModel.outputAudioURL = nil
+        }
+        if let currentMixedPath, pathsToDelete.contains(where: { currentMixedPath.hasPrefix($0) || currentMixedPath == $0 }) {
+            mixedOutputURL = nil
+        }
+        if let currentBackgroundPath, pathsToDelete.contains(where: { currentBackgroundPath.hasPrefix($0) || currentBackgroundPath == $0 }) {
+            backgroundAudioURL = nil
+            isBackgroundMixEnabled = false
+        }
+
+        if let currentBackgroundPreviewURL,
+           pathsToDelete.contains(where: { currentBackgroundPreviewURL.path.hasPrefix($0) || currentBackgroundPreviewURL.path == $0 }) {
+            self.currentBackgroundPreviewURL = nil
+        }
+        refreshBackgroundContext(forForegroundURL: inferenceViewModel.outputAudioURL)
     }
 
     /// 将当前内存中的任务历史写回 UserDefaults。
@@ -783,6 +1073,258 @@ final class AppState: ObservableObject {
             return []
         }
         return entries
+    }
+
+    /// 从历史中定位生成指定输入文件的上游任务，建立单文件变声与 UVR 产物之间的关联。
+    private func sourceTaskID(forInputPath inputPath: String?) -> UUID? {
+        guard let inputPath, !inputPath.isEmpty else { return nil }
+        return taskHistory.first(where: { entry in
+            entry.outputPath == inputPath || entry.outputArtifacts.contains(where: { $0.path == inputPath })
+        })?.id
+    }
+
+    /// 把一组 URL 转成可持久化的历史产物引用。
+    private func artifacts(from urls: [URL], role: TaskHistoryArtifactRole) -> [TaskHistoryArtifact] {
+        urls.map {
+            TaskHistoryArtifact(id: UUID(), role: role, label: $0.lastPathComponent, path: $0.path)
+        }
+    }
+
+    /// 拼接多路径输入，避免在历史里丢失批处理和多文件 UVR 的来源信息。
+    private func joinedPaths(_ paths: [String]) -> String? {
+        let filtered = paths.filter { !$0.isEmpty }
+        guard !filtered.isEmpty else { return nil }
+        return filtered.joined(separator: "\n")
+    }
+
+    /// 收集单条历史可安全删除的路径，优先删 task 目录，其余补充独立文件路径。
+    private func storagePaths(for entry: TaskHistoryEntry) -> [String] {
+        var paths = Set<String>()
+        if let taskDirectoryPath = entry.taskDirectoryPath, !taskDirectoryPath.isEmpty {
+            paths.insert(taskDirectoryPath)
+        }
+        if let outputPath = entry.outputPath, !outputPath.isEmpty {
+            paths.insert(outputPath)
+        }
+        entry.outputArtifacts
+            .map(\.path)
+            .filter { !$0.isEmpty }
+            .forEach { paths.insert($0) }
+        return Array(paths)
+    }
+
+    /// 优先取可播放音频，用于 RES 里的回放和主波形预览。
+    private func primaryPlayableURL(for entry: TaskHistoryEntry) -> URL? {
+        if let mixedArtifact = entry.outputArtifacts.first(where: { $0.role == .mixedOutput }) {
+            return URL(fileURLWithPath: mixedArtifact.path)
+        }
+        if let outputPath = entry.outputPath, !outputPath.isEmpty {
+            var isDirectory: ObjCBool = false
+            if FileManager.default.fileExists(atPath: outputPath, isDirectory: &isDirectory), !isDirectory.boolValue {
+                return URL(fileURLWithPath: outputPath)
+            }
+        }
+        if let artifact = entry.outputArtifacts.first(where: { artifact in
+            switch artifact.role {
+            case .singleOutput, .uvrVocal:
+                return true
+            case .batchOutput, .uvrInstrumental, .mixedOutput:
+                return false
+            }
+        }) {
+            return URL(fileURLWithPath: artifact.path)
+        }
+        return nil
+    }
+
+    /// 随当前前景产物刷新背景声来源，优先复用历史中的 UVR instrument 关联。
+    private func refreshBackgroundContext(forForegroundURL foregroundURL: URL?) {
+        mixedOutputURL = existingMixedOutputURL(forForegroundURL: foregroundURL)
+        backgroundAudioURL = resolveBackgroundAudioURL(forForegroundURL: foregroundURL)
+
+        if backgroundAudioURL == nil {
+            backgroundPreviewRefreshTask?.cancel()
+            isBackgroundMixEnabled = false
+            cleanupBackgroundPreviewCache()
+            return
+        }
+
+        guard isBackgroundMixEnabled else { return }
+        scheduleBackgroundPreviewRefresh(after: .zero)
+    }
+
+    /// 统一调度背景预览刷新，取消旧任务并在滑杆停顿后再执行，减少播放中断。
+    private func scheduleBackgroundPreviewRefresh(after delay: Duration) {
+        backgroundPreviewRefreshTask?.cancel()
+        let backgroundURL = backgroundAudioURL
+        backgroundPreviewRefreshTask = Task { [weak self] in
+            if delay > .zero {
+                try? await Task.sleep(for: delay)
+            }
+            guard let self, !Task.isCancelled else { return }
+            await self.applyBackgroundPreviewIfNeeded(backgroundAudioURL: backgroundURL)
+        }
+    }
+
+    /// 根据当前前景产物或其输入链路，反查是否存在可用的 UVR instrumental。
+    private func resolveBackgroundAudioURL(forForegroundURL foregroundURL: URL?) -> URL? {
+        if let foregroundURL, let relatedEntry = taskHistoryEntry(forOutputPath: foregroundURL.path) {
+            if let sourceEntry = relatedEntry.sourceTaskID.flatMap({ sourceID in
+                taskHistory.first(where: { $0.id == sourceID })
+            }) {
+                return firstInstrumentalURL(for: sourceEntry)
+            }
+        }
+
+        if let sourceEntry = sourceTaskID(forInputPath: inferenceViewModel.inputFileURL?.path)
+            .flatMap({ sourceID in taskHistory.first(where: { $0.id == sourceID }) }) {
+            return firstInstrumentalURL(for: sourceEntry)
+        }
+
+        return nil
+    }
+
+    /// 从历史里找出当前前景产物已经生成过的 merged 版本，方便直接复用而不是重复导出。
+    private func existingMixedOutputURL(forForegroundURL foregroundURL: URL?) -> URL? {
+        guard let foregroundURL, let entry = taskHistoryEntry(forOutputPath: foregroundURL.path) else { return nil }
+        guard let artifact = entry.outputArtifacts.first(where: { $0.role == .mixedOutput }) else { return nil }
+        let url = URL(fileURLWithPath: artifact.path)
+        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+        return url
+    }
+
+    /// 把主播放器切回纯变声输出，避免关闭背景预览后仍停留在混音结果上。
+    private func reloadForegroundPreview() {
+        guard let foregroundURL = inferenceViewModel.outputAudioURL else {
+            cleanupBackgroundPreviewCache()
+            audioPlayer.load(url: nil)
+            return
+        }
+        cleanupBackgroundPreviewCache()
+        let shouldResumePlayback = audioPlayer.isPlaying
+        let progress = audioPlayer.playbackProgress
+        audioPlayer.load(
+            url: foregroundURL,
+            restoreProgress: progress,
+            autoPlay: shouldResumePlayback,
+            preserveWaveformWhileLoading: true
+        )
+    }
+
+    /// 在开启背景预览后，为当前前景产物生成或复用一个试听混音文件，并更新波形图。
+    private func applyBackgroundPreviewIfNeeded(backgroundAudioURL: URL?) async {
+        guard isBackgroundMixEnabled else {
+            reloadForegroundPreview()
+            return
+        }
+        guard
+            let foregroundURL = inferenceViewModel.outputAudioURL,
+            let backgroundAudioURL
+        else {
+            reloadForegroundPreview()
+            return
+        }
+
+        isPreparingBackgroundMix = true
+        defer { isPreparingBackgroundMix = false }
+
+        do {
+            let shouldResumePlayback = audioPlayer.isPlaying
+            let progress = audioPlayer.playbackProgress
+            let previewURL = try await audioCompositeService.exportPreviewMix(
+                foregroundURL: foregroundURL,
+                backgroundURL: backgroundAudioURL,
+                cacheDirectoryURL: environment.backgroundPreviewCacheDirectory,
+                backgroundGain: Float(backgroundMixLevel)
+            )
+            currentBackgroundPreviewURL = previewURL
+            cleanupBackgroundPreviewCache(keeping: previewURL)
+            audioPlayer.load(
+                url: previewURL,
+                waveformSourceURL: foregroundURL,
+                restoreProgress: progress,
+                autoPlay: shouldResumePlayback,
+                preserveWaveformWhileLoading: true
+            )
+        } catch {
+            isBackgroundMixEnabled = false
+            cleanupBackgroundPreviewCache()
+            reloadForegroundPreview()
+            statusMessage = error.localizedDescription
+            presentToast(message: error.localizedDescription, style: .error)
+        }
+    }
+
+    /// 清理背景预览缓存，默认只保留当前活跃的 preview，防止 background-mix 目录无限增长。
+    private func cleanupBackgroundPreviewCache(keeping keepURL: URL? = nil) {
+        let directoryURL = environment.backgroundPreviewCacheDirectory
+        let fileManager = FileManager.default
+        guard let contents = try? fileManager.contentsOfDirectory(at: directoryURL, includingPropertiesForKeys: nil) else {
+            currentBackgroundPreviewURL = keepURL
+            return
+        }
+
+        for fileURL in contents where fileURL != keepURL {
+            try? fileManager.removeItem(at: fileURL)
+        }
+        currentBackgroundPreviewURL = keepURL
+    }
+
+    /// 根据产物路径定位其对应历史记录，便于建立 merged 产物与原始单文件输出的关联。
+    private func taskHistoryEntry(forOutputPath path: String) -> TaskHistoryEntry? {
+        taskHistory.first { entry in
+            entry.outputPath == path || entry.outputArtifacts.contains(where: { $0.path == path })
+        }
+    }
+
+    /// 提取某条 UVR 历史记录的首个 instrumental，用作背景声来源。
+    private func firstInstrumentalURL(for entry: TaskHistoryEntry) -> URL? {
+        guard let artifact = entry.outputArtifacts.first(where: { $0.role == .uvrInstrumental }) else { return nil }
+        let url = URL(fileURLWithPath: artifact.path)
+        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+        return url
+    }
+
+    /// 将一键合并后的背景混音产物挂回原始单文件任务，方便在 RES 中回顾完整链路。
+    private func attachMixedOutputArtifact(_ mixedURL: URL, foregroundURL: URL) {
+        guard let index = taskHistory.firstIndex(where: { entry in
+            entry.kind == .single && (entry.outputPath == foregroundURL.path || entry.outputArtifacts.contains(where: { $0.path == foregroundURL.path }))
+        }) else {
+            return
+        }
+
+        var entry = taskHistory[index]
+        var artifacts = entry.outputArtifacts.filter { $0.role != .mixedOutput }
+        artifacts.append(
+            TaskHistoryArtifact(
+                id: UUID(),
+                role: .mixedOutput,
+                label: mixedURL.lastPathComponent,
+                path: mixedURL.path
+            )
+        )
+        entry = TaskHistoryEntry(
+            id: entry.id,
+            timestamp: entry.timestamp,
+            kind: entry.kind,
+            status: entry.status,
+            title: entry.title,
+            summary: entry.summary,
+            modelName: entry.modelName,
+            inputLabel: entry.inputLabel,
+            inputPath: entry.inputPath,
+            outputLabel: entry.outputLabel,
+            outputPath: entry.outputPath,
+            indexPath: entry.indexPath,
+            f0Method: entry.f0Method,
+            speakerID: entry.speakerID,
+            errorMessage: entry.errorMessage,
+            taskDirectoryPath: entry.taskDirectoryPath,
+            outputArtifacts: artifacts,
+            sourceTaskID: entry.sourceTaskID
+        )
+        taskHistory[index] = entry
+        persistTaskHistory()
     }
 
     /// 读取当前 app 进程的驻留内存大小。

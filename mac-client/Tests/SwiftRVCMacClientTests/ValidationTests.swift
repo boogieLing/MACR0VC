@@ -28,6 +28,7 @@ final class ValidationTests: XCTestCase {
         let request = SingleInferenceRequest(
             modelName: "demo.pth",
             inputFileURL: URL(fileURLWithPath: "/tmp/demo.wav"),
+            outputDirectoryURL: URL(fileURLWithPath: "/tmp/out", isDirectory: true),
             speakerID: 7,
             transpose: 0,
             f0Method: .rmvpe,
@@ -78,6 +79,7 @@ final class ValidationTests: XCTestCase {
         let request = SingleInferenceRequest(
             modelName: "demo.pth",
             inputFileURL: URL(fileURLWithPath: "/tmp/does-not-exist.wav"),
+            outputDirectoryURL: URL(fileURLWithPath: "/tmp/out", isDirectory: true),
             speakerID: 0,
             transpose: 0,
             f0Method: .rmvpe,
@@ -130,6 +132,7 @@ final class ValidationTests: XCTestCase {
         let request = SingleInferenceRequest(
             modelName: "demo.pth",
             inputFileURL: inputFile,
+            outputDirectoryURL: tempDirectory,
             speakerID: 0,
             transpose: 0,
             f0Method: .rmvpe,
@@ -157,6 +160,7 @@ final class ValidationTests: XCTestCase {
         let request = SingleInferenceRequest(
             modelName: "demo.pth",
             inputFileURL: inputFile,
+            outputDirectoryURL: tempDirectory,
             speakerID: 0,
             transpose: 0,
             f0Method: .rmvpe,

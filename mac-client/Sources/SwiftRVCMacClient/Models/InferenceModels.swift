@@ -9,6 +9,47 @@ enum F0Method: String, CaseIterable, Codable, Identifiable {
     case fcpe
 
     var id: String { rawValue }
+
+    /// Returns the display label shown in UI pickers and status cards.
+    var displayName: String {
+        rawValue.uppercased()
+    }
+
+    /// Returns the short sentence used in compact UI surfaces.
+    var shortDescription: String {
+        switch self {
+        case .pm:
+            return "Fastest classic option for quick tests."
+        case .dio:
+            return "Light classic option with simple balance."
+        case .harvest:
+            return "Stronger on low notes and noisy vocals."
+        case .crepe:
+            return "Most detailed, but also the heaviest."
+        case .rmvpe:
+            return "Recommended default for most vocals."
+        case .fcpe:
+            return "Light neural option with smoother tracking."
+        }
+    }
+
+    /// Returns the longer picker subtitle for users choosing an F0 strategy.
+    var pickerDescription: String {
+        switch self {
+        case .pm:
+            return "Fastest. Best for quick clean-speech checks."
+        case .dio:
+            return "Light classic fallback. Lower load than RMVPE."
+        case .harvest:
+            return "Safer on singing, low notes, and noisy takes."
+        case .crepe:
+            return "Most pitch detail, but the highest compute cost."
+        case .rmvpe:
+            return "Best all-rounder. Start here first."
+        case .fcpe:
+            return "Light neural balance between classic and CREPE."
+        }
+    }
 }
 
 enum OutputFormat: String, CaseIterable, Codable, Identifiable {
@@ -49,6 +90,7 @@ struct MemoryReleaseResult: Codable {
 struct SingleInferenceRequest: Encodable {
     let modelName: String
     let inputFileURL: URL
+    let outputDirectoryURL: URL
     let speakerID: Int
     let transpose: Double
     let f0Method: F0Method
@@ -86,6 +128,7 @@ struct SingleInferenceRequest: Encodable {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(modelName, forKey: .modelName)
         try container.encode(inputFileURL, forKey: .inputFileURL)
+        try container.encode(outputDirectoryURL, forKey: .outputDirectoryURL)
         try container.encode(speakerID, forKey: .speakerID)
         try container.encode(transpose, forKey: .transpose)
         try container.encode(f0Method, forKey: .f0Method)
@@ -101,6 +144,7 @@ struct SingleInferenceRequest: Encodable {
     private enum CodingKeys: String, CodingKey {
         case modelName
         case inputFileURL
+        case outputDirectoryURL
         case speakerID = "speakerId"
         case transpose
         case f0Method
@@ -125,6 +169,7 @@ struct SingleInferenceRequest: Encodable {
 struct SingleInferenceResult: Codable {
     let message: String
     let outputAudioURL: URL?
+    let outputDirectoryURL: URL?
 }
 
 struct BatchInferenceRequest: Encodable {
@@ -224,6 +269,7 @@ struct BatchInferenceRequest: Encodable {
 struct BatchInferenceResult: Codable {
     let message: String
     let outputDirectoryURL: URL?
+    let outputFileURLs: [URL]
 }
 
 enum ValidationError: LocalizedError {

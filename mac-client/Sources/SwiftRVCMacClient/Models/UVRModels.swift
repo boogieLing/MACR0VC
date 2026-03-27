@@ -38,4 +38,6 @@ struct UVRResult: Codable {
     let message: String
     let vocalOutputDirectoryURL: URL?
     let instrumentalOutputDirectoryURL: URL?
+    let vocalOutputFileURLs: [URL]
+    let instrumentalOutputFileURLs: [URL]
 }

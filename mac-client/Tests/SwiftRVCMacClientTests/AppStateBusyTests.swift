@@ -133,14 +133,19 @@ final class BusyTestBridgeClient: RVCBridgeClient {
         )
     }
 
+    /// 返回固定释放结果，满足统一缓存释放协议。
+    func releaseRuntimeMemory() async throws -> MemoryReleaseResult {
+        MemoryReleaseResult(released: true, message: "runtime released")
+    }
+
     /// 返回空单文件推理结果，避免测试桩实现遗漏协议方法。
     func convertSingle(_ request: SingleInferenceRequest) async throws -> SingleInferenceResult {
-        SingleInferenceResult(message: "", outputAudioURL: nil)
+        SingleInferenceResult(message: "", outputAudioURL: nil, outputDirectoryURL: nil)
     }
 
     /// 返回空批量推理结果，避免测试桩实现遗漏协议方法。
     func convertBatch(_ request: BatchInferenceRequest) async throws -> BatchInferenceResult {
-        BatchInferenceResult(message: "", outputDirectoryURL: nil)
+        BatchInferenceResult(message: "", outputDirectoryURL: nil, outputFileURLs: [])
     }
 
     /// 返回空 UVR 模型目录，满足测试桩最小协议实现。
@@ -155,7 +160,13 @@ final class BusyTestBridgeClient: RVCBridgeClient {
 
     /// 返回空 UVR 结果，满足测试桩最小协议实现。
     func convertUVR(_ request: UVRRequest) async throws -> UVRResult {
-        UVRResult(message: "", vocalOutputDirectoryURL: nil, instrumentalOutputDirectoryURL: nil)
+        UVRResult(
+            message: "",
+            vocalOutputDirectoryURL: nil,
+            instrumentalOutputDirectoryURL: nil,
+            vocalOutputFileURLs: [],
+            instrumentalOutputFileURLs: []
+        )
     }
 
     /// 返回健康的资产巡检结果，避免无关逻辑影响等待态测试。

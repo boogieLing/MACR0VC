@@ -64,25 +64,61 @@ final class AudioPreviewPlayer: NSObject, ObservableObject, @preconcurrency AVAu
     private var progressTimer: Timer?
 
     /// Loads the selected output file and precomputes a lightweight waveform preview.
-    func load(url: URL?) {
-        stop()
+    func load(
+        url: URL?,
+        waveformSourceURL: URL? = nil,
+        restoreProgress: Double? = nil,
+        autoPlay: Bool = false,
+        preserveWaveformWhileLoading: Bool = false
+    ) {
+        let preservedWaveformSamples = waveformSamples
+        let preservedCurrentTime = currentTime
+        let preservedDuration = duration
+
+        stopProgressTimer()
+        player?.stop()
+        player?.currentTime = 0
+        isPlaying = false
         loadedURL = url
-        waveformSamples = []
-        currentTime = 0
-        duration = 0
+        if preserveWaveformWhileLoading == false {
+            waveformSamples = []
+            currentTime = 0
+            duration = 0
+        }
         guard let url else { return }
+        let resolvedWaveformSourceURL = waveformSourceURL ?? url
 
         do {
             player = try AVAudioPlayer(contentsOf: url)
             player?.delegate = self
             player?.prepareToPlay()
             duration = player?.duration ?? 0
+            if preserveWaveformWhileLoading {
+                waveformSamples = preservedWaveformSamples
+                if restoreProgress == nil {
+                    currentTime = preservedCurrentTime
+                    if preservedDuration > 0 {
+                        duration = preservedDuration
+                    }
+                }
+            }
+            if let restoreProgress, duration > 0 {
+                let clampedProgress = min(max(restoreProgress, 0), 1)
+                player?.currentTime = clampedProgress * duration
+                currentTime = player?.currentTime ?? 0
+            }
             Task.detached(priority: .userInitiated) {
-                let samples = makePreviewWaveformSamples(for: url)
+                let samples = makePreviewWaveformSamples(for: resolvedWaveformSourceURL)
                 await MainActor.run {
                     guard self.loadedURL == url else { return }
+                    if preserveWaveformWhileLoading, samples.isEmpty == true {
+                        return
+                    }
                     self.waveformSamples = samples
                 }
+            }
+            if autoPlay {
+                play()
             }
         } catch {
             player = nil

@@ -11,6 +11,9 @@ protocol RVCBridgeClient {
     /// Unloads the active model and returns a compact backend status payload.
     func unloadModel() async throws -> ModelUnloadResult
 
+    /// Releases model, realtime, UVR, and torch cache state in one backend call.
+    func releaseRuntimeMemory() async throws -> MemoryReleaseResult
+
     /// Dispatches a single-file conversion request.
     func convertSingle(_ request: SingleInferenceRequest) async throws -> SingleInferenceResult
 
@@ -115,6 +118,12 @@ final class PythonRVCBridgeClient: RVCBridgeClient {
     func unloadModel() async throws -> ModelUnloadResult {
         let data = try await run(command: "unload-model", arguments: [])
         return try decode(ModelUnloadResult.self, from: data)
+    }
+
+    /// Releases model, realtime, UVR, and torch cache state in one backend call.
+    func releaseRuntimeMemory() async throws -> MemoryReleaseResult {
+        let data = try await run(command: "release-runtime-memory", arguments: [])
+        return try decode(MemoryReleaseResult.self, from: data)
     }
 
     /// Dispatches a single-file conversion request.

@@ -4,17 +4,35 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct RootView: View {
+    private let helpTooltipSpace = "root-help-tooltip-space"
+    private enum PendingDestructiveAction: Identifiable {
+        case unloadModel
+        case clearCustomIndex
+        case clearF0Curve
+
+        var id: String {
+            switch self {
+            case .unloadModel:
+                return "unload-model"
+            case .clearCustomIndex:
+                return "clear-custom-index"
+            case .clearF0Curve:
+                return "clear-f0-curve"
+            }
+        }
+    }
+
     @EnvironmentObject private var appState: AppState
     @State private var parameterBank: ConsoleParameterBank = .single
     @State private var isFAQPresented = false
-    @State private var faqMarkdown = ""
-    @State private var faqSourceLabel = "FAQ"
     @State private var isAssetReportPresented = false
     @State private var isUVRPresented = false
     @State private var isONNXPresented = false
     @State private var isCheckpointToolsPresented = false
     @State private var isQueuePresented = false
     @State private var isHistoryPresented = false
+    @State private var pendingDestructiveAction: PendingDestructiveAction?
+    @StateObject private var helpTooltipCoordinator = HelpTooltipCoordinator()
 
     var body: some View {
         GeometryReader { proxy in
@@ -26,6 +44,8 @@ struct RootView: View {
             shellContent(proxy: proxy, railWidth: railWidth, contentHeight: proxy.size.height)
                 .frame(width: proxy.size.width, height: proxy.size.height, alignment: .topLeading)
         }
+        .coordinateSpace(name: helpTooltipSpace)
+        .environmentObject(helpTooltipCoordinator)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(consoleShellBackground)
         .ignoresSafeArea(.container, edges: [.top, .leading, .trailing, .bottom])
@@ -73,14 +93,16 @@ struct RootView: View {
                     .transition(.move(edge: .top).combined(with: .opacity))
                     .onTapGesture {
                         appState.dismissToast()
-                    }
+                }
             }
         }
+        .overlay {
+            GlobalHelpTooltipLayer()
+                .environmentObject(helpTooltipCoordinator)
+                .allowsHitTesting(false)
+        }
         .sheet(isPresented: $isFAQPresented) {
-            FAQDocumentSheet(
-                sourceLabel: faqSourceLabel,
-                markdown: faqMarkdown
-            )
+            HelpCenterSheet()
         }
         .sheet(isPresented: $isAssetReportPresented) {
             AssetReportSheet(viewModel: appState.assetAuditViewModel)
@@ -95,7 +117,7 @@ struct RootView: View {
                 onChooseVocalOutputDirectory: chooseUVRVocalOutputDirectory,
                 onChooseInstrumentalOutputDirectory: chooseUVRInstrumentalOutputDirectory,
                 onRun: {
-                    Task { await appState.uvrViewModel.convert() }
+                    Task { await appState.runUVRConvert() }
                 }
             )
         }
@@ -158,13 +180,45 @@ struct RootView: View {
         .sheet(isPresented: $isHistoryPresented) {
             ResultHistorySheet(
                 entries: appState.taskHistory,
-                onClear: appState.clearTaskHistory,
+                onClear: { kind in appState.clearTaskHistory(kind: kind) },
+                onDeleteEntry: appState.deleteTaskHistoryEntry(_:),
                 onLoadOutput: appState.loadTaskHistoryOutput(_:),
                 onPlayOutput: appState.playTaskHistoryOutput(_:),
                 onRevealOutput: appState.revealTaskHistoryOutput(_:)
             )
         }
         .animation(.spring(response: 0.28, dampingFraction: 0.9), value: appState.toast?.id)
+        .alert(item: $pendingDestructiveAction) { action in
+            switch action {
+            case .unloadModel:
+                return Alert(
+                    title: Text("Unload current model?"),
+                    message: Text("This will release the currently loaded voice model from memory. You will need to load it again before converting or running live voice change."),
+                    primaryButton: .destructive(Text("Unload model")) {
+                        Task { await appState.unloadModel() }
+                    },
+                    secondaryButton: .cancel()
+                )
+            case .clearCustomIndex:
+                return Alert(
+                    title: Text("Clear custom index?"),
+                    message: Text("This will remove the current external index override and return index selection to catalog or auto mode."),
+                    primaryButton: .destructive(Text("Clear index override")) {
+                        appState.clearSharedCustomIndexURL()
+                    },
+                    secondaryButton: .cancel()
+                )
+            case .clearF0Curve:
+                return Alert(
+                    title: Text("Clear custom F0 curve?"),
+                    message: Text("This will remove the currently selected external pitch curve from the single-file conversion setup."),
+                    primaryButton: .destructive(Text("Clear F0 curve")) {
+                        appState.inferenceViewModel.f0FileURL = nil
+                    },
+                    secondaryButton: .cancel()
+                )
+            }
+        }
         .onChange(of: appState.inferenceViewModel.transpose) {
             syncRealtimeControlsIfNeeded()
         }
@@ -264,12 +318,26 @@ struct RootView: View {
                 isBootstrapBusy: appState.isBootstrapBusy,
                 isCatalogBusy: appState.isCatalogBusy,
                 isModelSelectionBusy: appState.isModelSelectionBusy,
+                hasBackgroundTrack: appState.backgroundAudioURL != nil,
+                isBackgroundEnabled: appState.isBackgroundMixEnabled,
+                backgroundMixLevel: appState.backgroundMixLevel,
+                isPreparingBackgroundMix: appState.isPreparingBackgroundMix,
+                isPersistingBackgroundMix: appState.isPersistingBackgroundMix,
                 onSelectParameterBank: { bank in
                     parameterBank = bank
                 },
                 onResetRouting: resetRealtimeRoutingDefaults,
                 onResetPatchSidecar: resetPatchSidecarDefaults,
                 onResetFaders: resetActiveParameterBankDefaults,
+                onToggleBackgroundMix: {
+                    Task { await appState.toggleBackgroundMix() }
+                },
+                onChangeBackgroundMixLevel: { value in
+                    appState.setBackgroundMixLevel(value)
+                },
+                onMergeBackgroundMix: {
+                    Task { await appState.mergeBackgroundMix() }
+                },
                 onContextAction: handleContextAction
             )
             .frame(width: max(proxy.size.width - railWidth - 1, 0), height: contentHeight, alignment: .topLeading)
@@ -381,19 +449,21 @@ struct RootView: View {
             isQueuePresented = true
         case .showHistory:
             isHistoryPresented = true
+        case .releaseRuntimeCaches:
+            Task { await appState.releaseRuntimeCaches() }
         case .chooseAudio:
             chooseAudioFile()
         case .chooseCustomIndexFile:
             chooseCustomIndexFile()
         case .clearCustomIndexFile:
-            clearCustomIndexFile()
+            pendingDestructiveAction = .clearCustomIndex
         case .chooseF0CurveFile:
             chooseF0CurveFile()
         case .clearF0CurveFile:
-            clearF0CurveFile()
+            pendingDestructiveAction = .clearF0Curve
         case .convertSingle:
             isQueuePresented = true
-            Task { await appState.inferenceViewModel.convert(selectedModelName: appState.selectedModelName) }
+            Task { await appState.runSingleConvert() }
         case .playPreview:
             appState.audioPlayer.play()
         case .revealOutput:
@@ -407,7 +477,7 @@ struct RootView: View {
         case .chooseBatchOutputFolder:
             chooseBatchOutputDirectory()
         case .convertBatch:
-            Task { await appState.batchViewModel.convert(selectedModelName: appState.selectedModelName) }
+            Task { await appState.runBatchConvert() }
         case .openBatchOutput:
             appState.batchViewModel.openOutputDirectory()
         case .startRealtime:
@@ -415,7 +485,7 @@ struct RootView: View {
         case .stopRealtime:
             Task { await appState.stopRealtime() }
         case .unloadModel:
-            Task { await appState.unloadModel() }
+            pendingDestructiveAction = .unloadModel
         }
     }
 
@@ -525,7 +595,7 @@ struct RootView: View {
 
         if appState.onnxViewModel.exportFileURL == nil, let modelURL = appState.onnxViewModel.modelFileURL {
             let outputName = modelURL.deletingPathExtension().lastPathComponent + ".onnx"
-            appState.onnxViewModel.exportFileURL = appState.environment.defaultBatchOutputDirectory.appendingPathComponent(outputName)
+            appState.onnxViewModel.exportFileURL = appState.environment.defaultONNXExportDirectory.appendingPathComponent(outputName)
         }
     }
 
@@ -543,7 +613,7 @@ struct RootView: View {
         if panel.runModal() == .OK, let url = panel.url {
             appState.onnxViewModel.modelFileURL = url
             if appState.onnxViewModel.exportFileURL == nil {
-                appState.onnxViewModel.exportFileURL = appState.environment.defaultBatchOutputDirectory
+                appState.onnxViewModel.exportFileURL = appState.environment.defaultONNXExportDirectory
                     .appendingPathComponent(url.deletingPathExtension().lastPathComponent + ".onnx")
             }
         }
@@ -642,11 +712,6 @@ struct RootView: View {
         }
     }
 
-    /// 清空当前自定义索引文件。
-    private func clearCustomIndexFile() {
-        appState.clearSharedCustomIndexURL()
-    }
-
     /// 选择单文件推理的 F0 曲线文件。
     private func chooseF0CurveFile() {
         let panel = NSOpenPanel()
@@ -659,35 +724,8 @@ struct RootView: View {
         }
     }
 
-    /// 清空当前 F0 曲线文件。
-    private func clearF0CurveFile() {
-        appState.inferenceViewModel.f0FileURL = nil
-    }
-
-    /// 优先按当前语言加载 FAQ 文档，失败时展示兜底说明。
+    /// 打开应用内帮助中心。
     private func showFAQSheet() {
-        let prefersChinese = Locale.preferredLanguages.first?.lowercased().hasPrefix("zh") == true
-        let candidates: [(label: String, url: URL)] = prefersChinese
-            ? [
-                ("docs/cn/faq.md", appState.environment.engineRoot.appendingPathComponent("docs/cn/faq.md")),
-                ("docs/en/faq_en.md", appState.environment.engineRoot.appendingPathComponent("docs/en/faq_en.md"))
-            ]
-            : [
-                ("docs/en/faq_en.md", appState.environment.engineRoot.appendingPathComponent("docs/en/faq_en.md")),
-                ("docs/cn/faq.md", appState.environment.engineRoot.appendingPathComponent("docs/cn/faq.md"))
-            ]
-
-        for candidate in candidates where FileManager.default.fileExists(atPath: candidate.url.path) {
-            if let content = try? String(contentsOf: candidate.url, encoding: .utf8) {
-                faqSourceLabel = candidate.label
-                faqMarkdown = content
-                isFAQPresented = true
-                return
-            }
-        }
-
-        faqSourceLabel = "FAQ unavailable"
-        faqMarkdown = "Unable to load upstream FAQ markdown from `engine/docs`."
         isFAQPresented = true
     }
 }
@@ -723,6 +761,7 @@ private enum ConsoleContextAction: String, Identifiable {
     case startRealtime
     case stopRealtime
     case unloadModel
+    case releaseRuntimeCaches
 
     var id: String { rawValue }
 }
@@ -745,9 +784,9 @@ private enum ConsoleParameterBank: String, CaseIterable, Identifiable {
     var detail: String {
         switch self {
         case .single:
-            return "Edit single-convert faders"
+            return "Edit the faders used by one-file voice conversion."
         case .batch:
-            return "Edit batch-convert faders"
+            return "Edit the faders used by folder or multi-file conversion."
         }
     }
 }
@@ -772,10 +811,16 @@ private struct ConsoleMetric {
     let value: String
 }
 
+private enum ConsolePatchPopoverLayout {
+    case list
+    case grid(columns: Int)
+}
+
 private struct ConsoleControlSpec: Identifiable {
     let id: String
     let title: String
     let shortTitle: String
+    let helpText: String
     let color: Color
     let value: Binding<Double>
     let range: ClosedRange<Double>
@@ -868,8 +913,8 @@ private struct ConsoleLeftRail: View {
             VStack(spacing: 6) {
                 ConsolePatchMenuCard(
                     title: "VOICE MODEL",
-                    value: selectedModelName?.replacingOccurrences(of: ".pth", with: "") ?? "Choose a model",
-                    detail: models.isEmpty ? "No models loaded" : "\(models.count) loaded",
+                    value: selectedModelName?.replacingOccurrences(of: ".pth", with: "") ?? "Choose target voice",
+                    detail: models.isEmpty ? "Load a .pth voice model first." : "\(models.count) voice models ready to load.",
                     actionLabel: "SELECT",
                     accent: selectedModelName == nil ? nil : AppTheme.knobOrange,
                     options: models.map {
@@ -883,6 +928,9 @@ private struct ConsoleLeftRail: View {
                     emptyState: "No models loaded",
                     compactHeight: true,
                     isEnabled: !isModelPickerDisabled,
+                    popoverLayout: .grid(columns: 3),
+                    popoverWidth: 704,
+                    helpText: "Pick the target voice model. Loading a new model replaces the one currently in memory, so switch models only when you really want a different target tone.",
                     onSelect: onSelectModel
                 )
 
@@ -901,7 +949,7 @@ private struct ConsoleLeftRail: View {
                 ConsolePatchMenuCard(
                     title: "SPEAKER ID",
                     value: "\(inferenceViewModel.speakerID)",
-                    detail: selectedSpeakerCount > 1 ? "0...\(max(selectedSpeakerCount - 1, 0)) for current model" : "Single-speaker model",
+                    detail: selectedSpeakerCount > 1 ? "Choose which speaker slot to use in this multi-speaker model." : "This model has only one speaker, so keep it at 0.",
                     actionLabel: "SET",
                     accent: selectedSpeakerCount > 1 ? AppTheme.knobBlue : nil,
                     options: Array(0...max(selectedSpeakerCount - 1, 0)).map { speakerID in
@@ -911,6 +959,7 @@ private struct ConsoleLeftRail: View {
                     emptyState: "Speaker 0",
                     compactHeight: true,
                     isEnabled: true,
+                    helpText: "Use this only for multi-speaker models. Lower speaker IDs and higher speaker IDs are not 'better' or 'worse' by themselves; they are simply different trained voice slots.",
                     onSelect: { speakerID in
                         guard let parsedSpeakerID = Int(speakerID) else { return }
                         inferenceViewModel.speakerID = parsedSpeakerID
@@ -920,17 +969,18 @@ private struct ConsoleLeftRail: View {
 
                 ConsolePatchMenuCard(
                     title: "F0 METHOD",
-                    value: inferenceViewModel.f0Method.rawValue.uppercased(),
-                    detail: "Single + batch pitch detection",
+                    value: inferenceViewModel.f0Method.displayName,
+                    detail: inferenceViewModel.f0Method.shortDescription,
                     actionLabel: "SET",
                     accent: AppTheme.knobOrange,
                     options: F0Method.allCases.map { method in
-                        ConsolePickerOption(id: method.rawValue, title: method.rawValue.uppercased(), subtitle: method == .rmvpe ? "Default GPU-safe" : nil)
+                        ConsolePickerOption(id: method.rawValue, title: method.displayName, subtitle: method.pickerDescription)
                     },
                     selectedID: inferenceViewModel.f0Method.rawValue,
                     emptyState: "No F0 methods available",
                     compactHeight: true,
                     isEnabled: true,
+                    helpText: "Pitch extraction mode shared by single-file, batch, and live conversion. Open the menu to compare each method's trait, best use case, and tradeoff. RMVPE is the safest default.",
                     onSelect: { methodID in
                         guard let method = F0Method(rawValue: methodID) else { return }
                         inferenceViewModel.f0Method = method
@@ -954,21 +1004,22 @@ private struct ConsoleLeftRail: View {
 
                 ConsolePatchMenuCard(
                     title: "SR MODE",
-                    value: realtimeViewModel.sampleRateMode == .model ? "MODEL" : "DEVICE",
-                    detail: "Realtime sample rate source",
+                    value: realtimeViewModel.sampleRateMode.displayName,
+                    detail: realtimeViewModel.sampleRateMode.shortDescription,
                     actionLabel: "SET",
                     accent: AppTheme.knobBlue,
                     options: SampleRateMode.allCases.map { mode in
                         ConsolePickerOption(
                             id: mode.rawValue,
-                            title: mode == .model ? "Model Sample Rate" : "Device Sample Rate",
-                            subtitle: mode == .model ? "Use the loaded model target sample rate" : "Use the current input device sample rate"
+                            title: mode.displayName == "MODEL" ? "Model rate" : "Device rate",
+                            subtitle: mode.shortDescription
                         )
                     },
                     selectedID: realtimeViewModel.sampleRateMode.rawValue,
                     emptyState: "No sample rate modes available",
                     compactHeight: true,
                     isEnabled: true,
+                    helpText: "Choose whether live conversion follows the model target sample rate or the active device sample rate. Model mode is usually safer for tone consistency; device mode can reduce resampling mismatch with your audio interface.",
                     onSelect: { modeID in
                         guard let mode = SampleRateMode(rawValue: modeID) else { return }
                         realtimeViewModel.sampleRateMode = mode
@@ -977,7 +1028,7 @@ private struct ConsoleLeftRail: View {
                 )
 
                 ConsoleCompactSliderRow(
-                    title: "EXTRA",
+                    title: "BUFFER",
                     valueText: "\(decimalString(realtimeViewModel.extraInferenceTime)) S",
                     value: Binding(
                         get: { realtimeViewModel.extraInferenceTime },
@@ -989,11 +1040,12 @@ private struct ConsoleLeftRail: View {
                     range: 0...10,
                     step: 0.5,
                     accent: AppTheme.knobOrange,
-                    compact: true
+                    compact: true,
+                    helpText: "Extra realtime buffer. Lower values reduce latency, but can cause dropouts or crackle. Higher values improve stability, but increase delay."
                 )
 
                 ConsoleCompactSliderRow(
-                    title: "CPUS",
+                    title: "CPU",
                     valueText: "\(Int(realtimeViewModel.cpuProcesses)) PROCS",
                     value: Binding(
                         get: { Double(realtimeViewModel.cpuProcesses) },
@@ -1005,11 +1057,12 @@ private struct ConsoleLeftRail: View {
                     range: 1...Double(max(ProcessInfo.processInfo.processorCount, 1)),
                     step: 1,
                     accent: AppTheme.knobGrey,
-                    compact: true
+                    compact: true,
+                    helpText: "How many CPU worker processes the live pipeline may use. Lower values reduce overhead on small machines. Higher values can help throughput, but too high may create scheduling overhead or heat."
                 )
 
                 ConsoleCompactSliderRow(
-                    title: "THR",
+                    title: "GATE",
                     valueText: "\(realtimeViewModel.threshold) DB",
                     value: Binding(
                         get: { Double(realtimeViewModel.threshold) },
@@ -1021,11 +1074,12 @@ private struct ConsoleLeftRail: View {
                     range: -90...0,
                     step: 1,
                     accent: AppTheme.knobOrange,
-                    compact: true
+                    compact: true,
+                    helpText: "Input threshold gate. Lower values keep quiet breaths and room tone. Higher values reject more background noise, but can also cut off soft syllables or word endings."
                 )
 
             ConsoleCompactSliderRow(
-                title: "FMT",
+                title: "FORMANT",
                 valueText: decimalString(realtimeViewModel.formant),
                 value: Binding(
                     get: { realtimeViewModel.formant },
@@ -1037,11 +1091,12 @@ private struct ConsoleLeftRail: View {
                 range: -12...12,
                 step: 0.1,
                 accent: AppTheme.knobBlue,
-                compact: true
+                compact: true,
+                helpText: "Formant shift. Lower values darken or thicken tone. Higher values brighten or thin tone. Extreme values can sound artificial, so move in small steps."
             )
 
             ConsoleCompactSliderRow(
-                title: "SMP",
+                title: "WINDOW",
                 valueText: decimalString(realtimeViewModel.sampleLength),
                 value: Binding(
                     get: { realtimeViewModel.sampleLength },
@@ -1053,11 +1108,12 @@ private struct ConsoleLeftRail: View {
                 range: 0.05...3.0,
                 step: 0.01,
                 accent: AppTheme.knobOchre,
-                compact: true
+                compact: true,
+                helpText: "Realtime analysis window length. Lower values feel more responsive, but may wobble more. Higher values sound steadier, but add latency and can smear fast articulation."
             )
 
             ConsoleCompactSliderRow(
-                title: "FAD",
+                title: "FADE",
                 valueText: decimalString(realtimeViewModel.fadeLength),
                 value: Binding(
                     get: { realtimeViewModel.fadeLength },
@@ -1069,12 +1125,13 @@ private struct ConsoleLeftRail: View {
                 range: 0...1.0,
                 step: 0.01,
                 accent: AppTheme.knobGrey,
-                compact: true
+                compact: true,
+                helpText: "Crossfade length between realtime chunks. Lower values can sound sharper but risk clicks at chunk edges. Higher values smooth the joins, but can blur attacks if pushed too far."
             )
 
             HStack(spacing: 10) {
                 ConsoleCompactToggleRow(
-                    title: "IN NR",
+                    title: "IN CLEAN",
                     isOn: Binding(
                         get: { realtimeViewModel.inputNoiseReduction },
                         set: { newValue in
@@ -1083,10 +1140,11 @@ private struct ConsoleLeftRail: View {
                         }
                     ),
                     accent: Color(hex: 0x0984E3),
-                    compact: true
+                    compact: true,
+                    helpText: "Reduce noise before the voice conversion stage. Off keeps the raw mic character. On can clean room noise, but may also shave off fine breath detail."
                 )
                 ConsoleCompactToggleRow(
-                    title: "OUT NR",
+                    title: "OUT CLEAN",
                     isOn: Binding(
                         get: { realtimeViewModel.outputNoiseReduction },
                         set: { newValue in
@@ -1095,10 +1153,11 @@ private struct ConsoleLeftRail: View {
                         }
                     ),
                     accent: Color(hex: 0x0984E3),
-                    compact: true
+                    compact: true,
+                    helpText: "Reduce noise after conversion. Off keeps the full converted texture. On can reduce hiss, but may dull some high-frequency detail."
                 )
                 ConsoleCompactToggleRow(
-                    title: "PV",
+                    title: "SMOOTH",
                     isOn: Binding(
                         get: { realtimeViewModel.usePhaseVocoder },
                         set: { newValue in
@@ -1107,7 +1166,8 @@ private struct ConsoleLeftRail: View {
                         }
                     ),
                     accent: Color(hex: 0x0984E3),
-                    compact: true
+                    compact: true,
+                    helpText: "Use a phase-vocoder style smoothing pass. Off keeps attacks sharper. On can make the output smoother and steadier, but sometimes slightly softer."
                 )
             }
         }
@@ -1183,10 +1243,18 @@ private struct ConsoleDeck: View {
     let isBootstrapBusy: Bool
     let isCatalogBusy: Bool
     let isModelSelectionBusy: Bool
+    let hasBackgroundTrack: Bool
+    let isBackgroundEnabled: Bool
+    let backgroundMixLevel: Double
+    let isPreparingBackgroundMix: Bool
+    let isPersistingBackgroundMix: Bool
     let onSelectParameterBank: (ConsoleParameterBank) -> Void
     let onResetRouting: () -> Void
     let onResetPatchSidecar: () -> Void
     let onResetFaders: () -> Void
+    let onToggleBackgroundMix: () -> Void
+    let onChangeBackgroundMixLevel: (Double) -> Void
+    let onMergeBackgroundMix: () -> Void
     let onContextAction: (ConsoleContextAction) -> Void
 
     var body: some View {
@@ -1199,15 +1267,15 @@ private struct ConsoleDeck: View {
             let contentHeight = max(proxy.size.height - (tightDeck ? 36 : 44), 420)
             let actionPadWidth = compactDeck ? 308.0 : 560.0
             let monitorHeight = min(max(contentHeight * (tightDeck ? 0.17 : (shortDeck ? 0.38 : 0.45)), tightDeck ? 132 : 244), shortDeck ? 292 : 384)
-            let verticalReserve = tightDeck ? 236.0 : (compactDeck ? 350.0 : 478.0)
+            let verticalReserve = tightDeck ? 254.0 : (compactDeck ? 372.0 : 504.0)
             let availableFaderHeight = max(proxy.size.height - monitorHeight - verticalReserve, tightDeck ? 214.0 : 288.0)
-            let faderModuleHeight = min(availableFaderHeight, shortDeck ? 320.0 : 388.0)
-            let trackHeight = min(max(faderModuleHeight - (tightDeck ? 74 : 126), tightDeck ? 92.0 : 128.0), shortDeck ? 168.0 : 196.0)
+            let faderModuleHeight = min(availableFaderHeight, shortDeck ? 292.0 : 352.0)
+            let trackHeight = min(max(faderModuleHeight - (tightDeck ? 78 : 118), tightDeck ? 88.0 : 118.0), shortDeck ? 156.0 : 176.0)
             let faderWidth = max(
-                veryCompactDeck ? 38 : (compactDeck ? 46 : 70),
+                veryCompactDeck ? 36 : (compactDeck ? 42 : 62),
                 min(
-                    (proxy.size.width - actionPadWidth - (compactDeck ? 24 : 52)) / CGFloat(max(faderSpecs.count, 1)),
-                    compactDeck ? 66 : 92
+                    (proxy.size.width - actionPadWidth - (compactDeck ? 20 : 44)) / CGFloat(max(faderSpecs.count, 1)),
+                    compactDeck ? 60 : 78
                 )
             )
 
@@ -1224,12 +1292,12 @@ private struct ConsoleDeck: View {
                     tightHeight: tightDeck,
                     actionPadWidth: actionPadWidth
                 )
-                    .padding(.top, tightDeck ? 4 : 10)
+                    .padding(.top, tightDeck ? 2 : 4)
                     .frame(height: faderModuleHeight, alignment: .top)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .padding(.top, tightDeck ? 0 : (compactDeck ? 28 : 34))
-            .padding(.bottom, tightDeck ? 4 : 8)
+            .padding(.bottom, tightDeck ? 10 : 18)
             .padding(.leading, compactDeck ? 22 : 38)
             .padding(.trailing, compactDeck ? 18 : 36)
         }
@@ -1419,7 +1487,15 @@ private struct ConsoleDeck: View {
         ConsolePreviewWaveformPanel(
             audioPlayer: audioPlayer,
             isRunning: inferenceViewModel.isRunning,
-            tightHeight: tightHeight
+            tightHeight: tightHeight,
+            hasBackgroundTrack: hasBackgroundTrack,
+            isBackgroundEnabled: isBackgroundEnabled,
+            backgroundMixLevel: backgroundMixLevel,
+            isPreparingBackgroundMix: isPreparingBackgroundMix,
+            isPersistingBackgroundMix: isPersistingBackgroundMix,
+            onToggleBackgroundMix: onToggleBackgroundMix,
+            onChangeBackgroundMixLevel: onChangeBackgroundMixLevel,
+            onMergeBackgroundMix: onMergeBackgroundMix
         )
     }
 
@@ -1590,6 +1666,7 @@ private struct ConsoleDeck: View {
             ConsoleActionItem(id: "play", title: "PLAY", systemImage: "play.fill", action: .playPreview, isEnabled: inferenceViewModel.outputAudioURL != nil, accent: AppTheme.knobOrange),
             ConsoleActionItem(id: "open", title: "OPEN", systemImage: "folder.badge.waveform", action: .revealOutput, isEnabled: inferenceViewModel.outputAudioURL != nil, accent: nil),
             ConsoleActionItem(id: "unld", title: "UNLD", systemImage: "eject.fill", action: .unloadModel, isEnabled: selectedModelName != nil && !isModelSelectionBusy, accent: AppTheme.knobGrey),
+            ConsoleActionItem(id: "cache", title: "CACHE", systemImage: "memorychip", action: .releaseRuntimeCaches, isEnabled: engineController.state == .ready, accent: AppTheme.knobBlue),
         ]
     }
 
@@ -1717,6 +1794,7 @@ private struct ConsoleDeck: View {
                     emptyState: "Choose parameter bank",
                     compactHeight: true,
                     isEnabled: true,
+                    helpText: "Choose whether the bottom faders edit one-file conversion or batch conversion parameters. This does not change the model; it only changes which parameter set the faders write into.",
                     onSelect: { bankID in
                         guard let bank = ConsoleParameterBank(rawValue: bankID) else { return }
                         onSelectParameterBank(bank)
@@ -1727,7 +1805,7 @@ private struct ConsoleDeck: View {
                 ConsolePatchMenuCard(
                     title: "INDEX FILE",
                     value: inferenceViewModel.customIndexURL?.lastPathComponent ?? inferenceViewModel.selectedIndexPath.map(lastPath) ?? "Optional / auto",
-                    detail: inferenceViewModel.customIndexURL == nil ? (indexPaths.isEmpty ? "Optional for RVC" : "\(indexPaths.count) loaded, optional") : "External override active",
+                    detail: inferenceViewModel.customIndexURL == nil ? (indexPaths.isEmpty ? "Optional. Skip it if the voice already sounds right." : "\(indexPaths.count) indexes available. Auto-match if needed.") : "External index override is active.",
                     actionLabel: "PICK",
                     accent: inferenceViewModel.selectedIndexPath == nil ? nil : AppTheme.knobOchre,
                     options: (inferenceViewModel.customIndexURL.map {
@@ -1745,6 +1823,7 @@ private struct ConsoleDeck: View {
                     emptyState: "No index needed",
                     compactHeight: true,
                     isEnabled: true,
+                    helpText: "Indexes can preserve more target voice color. Lower index use sounds closer to raw conversion. Higher index use sounds more like the trained target, but can exaggerate artifacts if the index does not match well.",
                     onSelect: { selection in
                         switch selection {
                         case "__choose_custom__":
@@ -1839,10 +1918,10 @@ private struct ConsoleDeck: View {
     private var routingMonitorControl: some View {
         ConsoleInlineRouteControl(
             title: "MON",
-            value: realtimeViewModel.monitorMode == .outputConverted ? "VC" : "INPUT",
+            value: realtimeViewModel.monitorMode.displayName,
             accent: AppTheme.knobOrange,
             options: RealtimeMonitorMode.allCases.map { mode in
-                ConsolePickerOption(id: mode.rawValue, title: mode == .outputConverted ? "Converted Voice" : "Input Monitor", subtitle: nil)
+                ConsolePickerOption(id: mode.rawValue, title: mode.displayName == "VC" ? "Converted voice" : "Input monitor", subtitle: mode.shortDescription)
             },
             selectedID: realtimeViewModel.monitorMode.rawValue,
             emptyState: "No monitor modes",
@@ -1862,24 +1941,24 @@ private struct ConsoleDeck: View {
 
     private var knobSpecs: [ConsoleControlSpec] {
         [
-            ConsoleControlSpec(id: "pitch", title: "\(parameterBank.title.uppercased()) PIT", shortTitle: "PIT", color: parameterBank == .single ? AppTheme.knobBlue : AppTheme.knobOrange, value: parameterTranspose, range: -24...24, step: 1, isInteractive: true, formatter: integerString),
-            ConsoleControlSpec(id: "index", title: "\(parameterBank.title.uppercased()) IDX", shortTitle: "IDX", color: AppTheme.knobOchre, value: parameterIndexRate, range: 0...1, step: 0.01, isInteractive: true, formatter: decimalString),
-            ConsoleControlSpec(id: "guard", title: "\(parameterBank.title.uppercased()) GRD", shortTitle: "GRD", color: AppTheme.knobGrey, value: parameterProtect, range: 0...0.5, step: 0.01, isInteractive: true, formatter: decimalString),
-            ConsoleControlSpec(id: "rms", title: "\(parameterBank.title.uppercased()) RMS", shortTitle: "RMS", color: parameterBank == .single ? AppTheme.knobOrange : AppTheme.knobBlue, value: parameterRMSMixRate, range: 0...1, step: 0.01, isInteractive: true, formatter: decimalString),
-            ConsoleControlSpec(id: "master", title: "MASTER", shortTitle: "MST", color: AppTheme.knobWhite, value: .constant(normalizedActivity), range: 0...1, step: 0.01, isInteractive: false, formatter: percentString),
+            ConsoleControlSpec(id: "pitch", title: "\(parameterBank.title.uppercased()) PIT", shortTitle: "PIT", helpText: "Pitch shift in semitones for the current parameter bank. Lower values push the voice down and can make it heavier. Higher values push it up and can make it brighter or thinner.", color: parameterBank == .single ? AppTheme.knobBlue : AppTheme.knobOrange, value: parameterTranspose, range: -24...24, step: 1, isInteractive: true, formatter: integerString),
+            ConsoleControlSpec(id: "index", title: "\(parameterBank.title.uppercased()) IDX", shortTitle: "IDX", helpText: "How strongly the index file should influence the current conversion bank. Lower values lean toward the raw model output. Higher values lean toward the indexed target identity, but mismatched indexes can sound brittle.", color: AppTheme.knobOchre, value: parameterIndexRate, range: 0...1, step: 0.01, isInteractive: true, formatter: decimalString),
+            ConsoleControlSpec(id: "guard", title: "\(parameterBank.title.uppercased()) GRD", shortTitle: "GRD", helpText: "Protection amount that keeps consonants and noisy edges from over-converting. Lower values let the model convert more aggressively. Higher values keep more of the source articulation and reduce tearing.", color: AppTheme.knobGrey, value: parameterProtect, range: 0...0.5, step: 0.01, isInteractive: true, formatter: decimalString),
+            ConsoleControlSpec(id: "rms", title: "\(parameterBank.title.uppercased()) RMS", shortTitle: "RMS", helpText: "Loudness mix ratio between the source and converted result for the current bank. Lower values keep the converted level behavior more directly. Higher values preserve more source loudness contour.", color: parameterBank == .single ? AppTheme.knobOrange : AppTheme.knobBlue, value: parameterRMSMixRate, range: 0...1, step: 0.01, isInteractive: true, formatter: decimalString),
+            ConsoleControlSpec(id: "master", title: "MASTER", shortTitle: "MST", helpText: "Read-only activity meter for the current app state.", color: AppTheme.knobWhite, value: .constant(normalizedActivity), range: 0...1, step: 0.01, isInteractive: false, formatter: percentString),
         ]
     }
 
     private var faderSpecs: [ConsoleControlSpec] {
         [
-            ConsoleControlSpec(id: "pitch", title: "PITCH", shortTitle: parameterBank == .single ? "S-P" : "B-P", color: AppTheme.knobWhite, value: parameterTranspose, range: -24...24, step: 1, isInteractive: true, formatter: integerString),
-            ConsoleControlSpec(id: "index", title: "INDEX", shortTitle: parameterBank == .single ? "S-I" : "B-I", color: AppTheme.knobWhite, value: parameterIndexRate, range: 0...1, step: 0.01, isInteractive: true, formatter: decimalString),
-            ConsoleControlSpec(id: "filter", title: "FILTER", shortTitle: parameterBank == .single ? "S-F" : "B-F", color: AppTheme.knobWhite, value: parameterFilterRadius, range: 0...7, step: 1, isInteractive: true, formatter: integerString),
-            ConsoleControlSpec(id: "sample", title: "RESAMP", shortTitle: parameterBank == .single ? "S-R" : "B-R", color: AppTheme.knobWhite, value: parameterResampleSR, range: 0...48_000, step: 100, isInteractive: true, formatter: integerString),
-            ConsoleControlSpec(id: "rms", title: "RMS", shortTitle: parameterBank == .single ? "S-M" : "B-M", color: AppTheme.knobWhite, value: parameterRMSMixRate, range: 0...1, step: 0.01, isInteractive: true, formatter: decimalString),
-            ConsoleControlSpec(id: "protect", title: "GUARD", shortTitle: parameterBank == .single ? "S-G" : "B-G", color: AppTheme.knobWhite, value: parameterProtect, range: 0...0.5, step: 0.01, isInteractive: true, formatter: decimalString),
-            ConsoleControlSpec(id: "batch", title: "QUEUE", shortTitle: "QUE", color: AppTheme.knobWhite, value: .constant(batchViewModel.inputDirectoryURL != nil || !batchViewModel.inputFileURLs.isEmpty ? 1 : 0.15), range: 0...1, step: 0.01, isInteractive: false, formatter: percentString),
-            ConsoleControlSpec(id: "preview", title: "PLAY", shortTitle: "PLY", color: AppTheme.knobWhite, value: .constant(inferenceViewModel.outputAudioURL == nil ? 0.15 : 1), range: 0...1, step: 0.01, isInteractive: false, formatter: percentString),
+            ConsoleControlSpec(id: "pitch", title: "PITCH", shortTitle: parameterBank == .single ? "S-P" : "B-P", helpText: "Pitch shift in semitones for the \(parameterBank.title.lowercased()) workflow. Lower makes the voice deeper. Higher makes it brighter or younger, but extreme values can sound synthetic.", color: AppTheme.knobWhite, value: parameterTranspose, range: -24...24, step: 1, isInteractive: true, formatter: integerString),
+            ConsoleControlSpec(id: "index", title: "INDEX", shortTitle: parameterBank == .single ? "S-I" : "B-I", helpText: "Index blend amount for the \(parameterBank.title.lowercased()) workflow. Lower is safer and cleaner. Higher usually increases target identity, but a mismatched index can create metallic or brittle artifacts.", color: AppTheme.knobWhite, value: parameterIndexRate, range: 0...1, step: 0.01, isInteractive: true, formatter: decimalString),
+            ConsoleControlSpec(id: "filter", title: "FILTER", shortTitle: parameterBank == .single ? "S-F" : "B-F", helpText: "Median filter radius for smoothing pitch before conversion. Lower keeps fast pitch movement and vibrato. Higher smooths jumps and wobble, but can flatten expressive pitch detail.", color: AppTheme.knobWhite, value: parameterFilterRadius, range: 0...7, step: 1, isInteractive: true, formatter: integerString),
+            ConsoleControlSpec(id: "sample", title: "RESAMP", shortTitle: parameterBank == .single ? "S-R" : "B-R", helpText: "Optional output resample target. Lower or near-zero values keep the original output rate. Higher values force a new sample rate and may help compatibility, but can add another resampling stage.", color: AppTheme.knobWhite, value: parameterResampleSR, range: 0...48_000, step: 100, isInteractive: true, formatter: integerString),
+            ConsoleControlSpec(id: "rms", title: "RMS", shortTitle: parameterBank == .single ? "S-M" : "B-M", helpText: "Loudness blend amount for the \(parameterBank.title.lowercased()) workflow. Lower values let the converted audio define dynamics more directly. Higher values preserve more of the source loudness envelope.", color: AppTheme.knobWhite, value: parameterRMSMixRate, range: 0...1, step: 0.01, isInteractive: true, formatter: decimalString),
+            ConsoleControlSpec(id: "protect", title: "GUARD", shortTitle: parameterBank == .single ? "S-G" : "B-G", helpText: "Protection amount that reduces brittle consonants or over-conversion artifacts. Lower values sound more fully converted. Higher values keep more source texture and can reduce tearing or hiss on consonants.", color: AppTheme.knobWhite, value: parameterProtect, range: 0...0.5, step: 0.01, isInteractive: true, formatter: decimalString),
+            ConsoleControlSpec(id: "batch", title: "QUEUE", shortTitle: "QUE", helpText: "Read-only indicator showing whether batch input files are ready.", color: AppTheme.knobWhite, value: .constant(batchViewModel.inputDirectoryURL != nil || !batchViewModel.inputFileURLs.isEmpty ? 1 : 0.15), range: 0...1, step: 0.01, isInteractive: false, formatter: percentString),
+            ConsoleControlSpec(id: "preview", title: "PLAY", shortTitle: "PLY", helpText: "Read-only indicator showing whether a previewable output is available.", color: AppTheme.knobWhite, value: .constant(inferenceViewModel.outputAudioURL == nil ? 0.15 : 1), range: 0...1, step: 0.01, isInteractive: false, formatter: percentString),
         ]
     }
 
@@ -2153,6 +2232,135 @@ private struct ConsoleActionKnob: View {
     }
 }
 
+private enum InlineHelpPlacement {
+    case belowLeading
+    case aboveLeading
+}
+
+private struct HelpTooltipPayload: Equatable {
+    let message: String
+    let anchorFrame: CGRect
+    let placement: InlineHelpPlacement
+}
+
+private final class HelpTooltipCoordinator: ObservableObject {
+    @Published var tooltip: HelpTooltipPayload?
+
+    /// 显示指定位置的全局 tooltip。
+    func show(message: String, frame: CGRect, placement: InlineHelpPlacement) {
+        tooltip = HelpTooltipPayload(message: message, anchorFrame: frame, placement: placement)
+    }
+
+    /// 仅当当前 tooltip 与消息匹配时才隐藏，避免互相抢状态。
+    func hide(message: String) {
+        guard tooltip?.message == message else { return }
+        tooltip = nil
+    }
+}
+
+private struct GlobalHelpTooltipLayer: View {
+    @EnvironmentObject private var coordinator: HelpTooltipCoordinator
+    private let bubbleWidth: CGFloat = 240
+    private let horizontalInset: CGFloat = 18
+
+    var body: some View {
+        GeometryReader { proxy in
+            if let tooltip = coordinator.tooltip {
+                helpBubble(message: tooltip.message)
+                    .frame(width: bubbleWidth, alignment: .leading)
+                    .position(
+                        x: clampedCenterX(for: tooltip.anchorFrame, containerWidth: proxy.size.width),
+                        y: resolvedCenterY(for: tooltip.anchorFrame, placement: tooltip.placement)
+                    )
+                    .transition(.opacity.combined(with: .scale(scale: 0.98, anchor: .topLeading)))
+                    .zIndex(100_000)
+            }
+        }
+    }
+
+    /// 约束 tooltip 水平位置，避免跑出窗口外。
+    private func clampedCenterX(for frame: CGRect, containerWidth: CGFloat) -> CGFloat {
+        let desired = frame.minX - 6 + bubbleWidth / 2
+        let minX = horizontalInset + bubbleWidth / 2
+        let maxX = containerWidth - horizontalInset - bubbleWidth / 2
+        return min(max(desired, minX), maxX)
+    }
+
+    /// 根据控件位置决定 tooltip 出现在上方还是下方。
+    private func resolvedCenterY(for frame: CGRect, placement: InlineHelpPlacement) -> CGFloat {
+        switch placement {
+        case .belowLeading:
+            return frame.maxY + 20
+        case .aboveLeading:
+            return frame.minY - 20
+        }
+    }
+
+    /// 渲染深黑半透明磨砂说明气泡。
+    private func helpBubble(message: String) -> some View {
+        Text(message)
+            .font(.system(size: 11, weight: .medium, design: .rounded))
+            .foregroundStyle(Color.white.opacity(0.96))
+            .frame(width: bubbleWidth, alignment: .leading)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
+            .background(
+                ZStack {
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .fill(.ultraThinMaterial)
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .fill(Color.black.opacity(0.48))
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .fill(Color.black.opacity(0.10))
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .strokeBorder(Color.white.opacity(0.14), lineWidth: 1)
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .strokeBorder(Color.black.opacity(0.36), lineWidth: 1)
+                }
+            )
+            .compositingGroup()
+            .shadow(color: Color.black.opacity(0.34), radius: 18, y: 12)
+    }
+}
+
+private struct InlineHelpButton: View {
+    let message: String
+    let compact: Bool
+    let placement: InlineHelpPlacement
+    @EnvironmentObject private var coordinator: HelpTooltipCoordinator
+
+    init(message: String, compact: Bool, placement: InlineHelpPlacement = .belowLeading) {
+        self.message = message
+        self.compact = compact
+        self.placement = placement
+    }
+
+    var body: some View {
+        GeometryReader { proxy in
+            Image(systemName: "questionmark.circle")
+                .font(.system(size: compact ? 10 : 11, weight: .semibold))
+                .foregroundStyle(AppTheme.labelInk.opacity(0.64))
+                .frame(width: compact ? 12 : 14, height: compact ? 12 : 14)
+                .contentShape(Rectangle())
+                .onHover { hovering in
+                    withAnimation(.easeOut(duration: 0.12)) {
+                        if hovering {
+                            coordinator.show(
+                                message: message,
+                                frame: proxy.frame(in: .named("root-help-tooltip-space")),
+                                placement: placement
+                            )
+                        } else {
+                            coordinator.hide(message: message)
+                        }
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+        }
+        .frame(width: compact ? 12 : 14, height: compact ? 12 : 14)
+    }
+}
+
 private struct ConsoleFader: View {
     let spec: ConsoleControlSpec
     let trackHeight: CGFloat
@@ -2165,9 +2373,12 @@ private struct ConsoleFader: View {
 
     var body: some View {
         VStack(spacing: compactHeight ? 4 : 8) {
-            Text(spec.shortTitle)
-                .font(.system(size: compactHeight ? 9 : 10, weight: .medium, design: .monospaced))
-                .foregroundStyle(AppTheme.labelInk)
+            HStack(spacing: 4) {
+                Text(spec.shortTitle)
+                    .font(.system(size: compactHeight ? 9 : 10, weight: .medium, design: .monospaced))
+                    .foregroundStyle(AppTheme.labelInk)
+                InlineHelpButton(message: spec.helpText, compact: compactHeight, placement: .aboveLeading)
+            }
 
             ZStack(alignment: .top) {
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
@@ -2251,6 +2462,7 @@ private struct ConsoleFader: View {
         .frame(width: width)
         .frame(maxHeight: .infinity, alignment: .top)
         .opacity(spec.isInteractive ? 1 : 0.8)
+        .help(spec.helpText)
     }
 
     private var normalizedValue: Double {
@@ -2850,14 +3062,40 @@ private struct ConsoleCompactSliderRow: View {
     let step: Double
     let accent: Color
     let compact: Bool
+    let helpText: String?
+
+    init(
+        title: String,
+        valueText: String,
+        value: Binding<Double>,
+        range: ClosedRange<Double>,
+        step: Double,
+        accent: Color,
+        compact: Bool,
+        helpText: String? = nil
+    ) {
+        self.title = title
+        self.valueText = valueText
+        self._value = value
+        self.range = range
+        self.step = step
+        self.accent = accent
+        self.compact = compact
+        self.helpText = helpText
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: compact ? 5 : 6) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text(title)
-                    .font(.system(size: compact ? 11 : 12, weight: .semibold, design: .monospaced))
-                    .foregroundStyle(AppTheme.labelInk)
-                    .frame(width: compact ? 34 : 40, alignment: .leading)
+                HStack(spacing: 4) {
+                    Text(title)
+                        .font(.system(size: compact ? 11 : 12, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(AppTheme.labelInk)
+                    if let helpText, !helpText.isEmpty {
+                        InlineHelpButton(message: helpText, compact: compact)
+                    }
+                }
+                .frame(width: compact ? 76 : 86, alignment: .leading)
 
                 Text(valueText.uppercased())
                     .font(.system(size: compact ? 11 : 12, weight: .medium, design: .monospaced))
@@ -2873,6 +3111,7 @@ private struct ConsoleCompactSliderRow: View {
                 .controlSize(.small)
                 .padding(.vertical, compact ? 1 : 2)
         }
+        .help(helpText ?? title)
     }
 }
 
@@ -2881,17 +3120,41 @@ private struct ConsoleCompactToggleRow: View {
     @Binding var isOn: Bool
     let accent: Color
     let compact: Bool
+    let helpText: String?
     var onLabel: String = "ON"
     var offLabel: String = "OFF"
+
+    init(
+        title: String,
+        isOn: Binding<Bool>,
+        accent: Color,
+        compact: Bool,
+        helpText: String? = nil,
+        onLabel: String = "ON",
+        offLabel: String = "OFF"
+    ) {
+        self.title = title
+        self._isOn = isOn
+        self.accent = accent
+        self.compact = compact
+        self.helpText = helpText
+        self.onLabel = onLabel
+        self.offLabel = offLabel
+    }
 
     var body: some View {
         Button {
             isOn.toggle()
         } label: {
             VStack(alignment: .leading, spacing: compact ? 5 : 6) {
-                Text(title)
-                    .font(.system(size: compact ? 11 : 12, weight: .semibold, design: .monospaced))
-                    .foregroundStyle(AppTheme.labelInk)
+                HStack(spacing: 4) {
+                    Text(title)
+                        .font(.system(size: compact ? 11 : 12, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(AppTheme.labelInk)
+                    if let helpText, !helpText.isEmpty {
+                        InlineHelpButton(message: helpText, compact: compact)
+                    }
+                }
 
                 HStack(spacing: 8) {
                     Capsule(style: .continuous)
@@ -2914,6 +3177,7 @@ private struct ConsoleCompactToggleRow: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .help(helpText ?? title)
     }
 }
 
@@ -2928,8 +3192,43 @@ private struct ConsolePatchMenuCard: View {
     let emptyState: String
     let compactHeight: Bool
     let isEnabled: Bool
+    let popoverLayout: ConsolePatchPopoverLayout
+    let popoverWidth: CGFloat
+    let helpText: String?
     let onSelect: (String) -> Void
     @State private var isPresented = false
+
+    init(
+        title: String,
+        value: String,
+        detail: String,
+        actionLabel: String,
+        accent: Color?,
+        options: [ConsolePickerOption],
+        selectedID: String?,
+        emptyState: String,
+        compactHeight: Bool,
+        isEnabled: Bool,
+        popoverLayout: ConsolePatchPopoverLayout = .list,
+        popoverWidth: CGFloat = 320,
+        helpText: String? = nil,
+        onSelect: @escaping (String) -> Void
+    ) {
+        self.title = title
+        self.value = value
+        self.detail = detail
+        self.actionLabel = actionLabel
+        self.accent = accent
+        self.options = options
+        self.selectedID = selectedID
+        self.emptyState = emptyState
+        self.compactHeight = compactHeight
+        self.isEnabled = isEnabled
+        self.popoverLayout = popoverLayout
+        self.popoverWidth = popoverWidth
+        self.helpText = helpText
+        self.onSelect = onSelect
+    }
 
     var body: some View {
         Button {
@@ -2937,9 +3236,14 @@ private struct ConsolePatchMenuCard: View {
         } label: {
             HStack(alignment: .top, spacing: compactHeight ? 8 : 10) {
                 VStack(alignment: .leading, spacing: compactHeight ? 3 : 5) {
-                    Text(title)
-                        .font(.system(size: compactHeight ? 9 : 10, weight: .semibold, design: .monospaced))
-                        .foregroundStyle(AppTheme.labelInk)
+                    HStack(spacing: 4) {
+                        Text(title)
+                            .font(.system(size: compactHeight ? 9 : 10, weight: .semibold, design: .monospaced))
+                            .foregroundStyle(AppTheme.labelInk)
+                        if let helpText, !helpText.isEmpty {
+                            InlineHelpButton(message: helpText, compact: compactHeight)
+                        }
+                    }
                     Text(value.uppercased())
                         .font(.system(size: compactHeight ? 11 : 12, weight: .semibold, design: .rounded))
                         .foregroundStyle(AppTheme.valueInk)
@@ -2983,6 +3287,7 @@ private struct ConsolePatchMenuCard: View {
         .buttonStyle(.plain)
         .disabled(!isEnabled)
         .opacity(isEnabled ? 1 : 0.48)
+        .help(helpText ?? detail)
         .popover(isPresented: $isPresented, arrowEdge: .trailing) {
             VStack(alignment: .leading, spacing: 10) {
                 ConsolePopoverHeader(
@@ -2995,27 +3300,53 @@ private struct ConsolePatchMenuCard: View {
                     ConsolePopoverEmptyState(message: emptyState)
                 } else {
                     ScrollView {
-                        VStack(spacing: 8) {
-                            ForEach(options) { option in
-                                ConsolePatchOptionRow(
-                                    title: option.title,
-                                    subtitle: option.subtitle,
-                                    accent: accent ?? AppTheme.knobOrange,
-                                    isSelected: option.id == selectedID
-                                ) {
-                                    onSelect(option.id)
-                                    isPresented = false
+                        switch popoverLayout {
+                        case .list:
+                            VStack(spacing: 8) {
+                                ForEach(options) { option in
+                                    ConsolePatchOptionRow(
+                                        title: option.title,
+                                        subtitle: option.subtitle,
+                                        accent: accent ?? AppTheme.knobOrange,
+                                        isSelected: option.id == selectedID
+                                    ) {
+                                        onSelect(option.id)
+                                        isPresented = false
+                                    }
                                 }
                             }
+                            .padding(.vertical, 2)
+                            .padding(.trailing, 14)
+                        case let .grid(columns):
+                            LazyVGrid(
+                                columns: Array(
+                                    repeating: GridItem(.flexible(minimum: 168), spacing: 12, alignment: .top),
+                                    count: max(columns, 1)
+                                ),
+                                alignment: .leading,
+                                spacing: 12
+                            ) {
+                                ForEach(options) { option in
+                                    ConsolePatchOptionTile(
+                                        title: option.title,
+                                        subtitle: option.subtitle,
+                                        accent: accent ?? AppTheme.knobOrange,
+                                        isSelected: option.id == selectedID
+                                    ) {
+                                        onSelect(option.id)
+                                        isPresented = false
+                                    }
+                                }
+                            }
+                            .padding(.vertical, 2)
+                            .padding(.trailing, 14)
                         }
-                        .padding(.vertical, 2)
-                        .padding(.trailing, 14)
                     }
-                    .frame(maxHeight: 280)
+                    .frame(maxHeight: popoverLayoutMaxHeight)
                 }
             }
             .padding(14)
-            .frame(width: 320)
+            .frame(width: popoverWidth)
             .background(
                 ZStack(alignment: .leading) {
                     RoundedRectangle(cornerRadius: 16, style: .continuous)
@@ -3039,6 +3370,16 @@ private struct ConsolePatchMenuCard: View {
             )
             .shadow(color: AppTheme.contactShadow.opacity(0.18), radius: 2, y: 1)
             .shadow(color: AppTheme.hardShadow.opacity(0.24), radius: 12, y: 8)
+        }
+    }
+
+    /// 根据菜单布局切换 popover 的最大滚动高度。
+    private var popoverLayoutMaxHeight: CGFloat {
+        switch popoverLayout {
+        case .list:
+            return 280
+        case .grid:
+            return 420
         }
     }
 }
@@ -3106,6 +3447,97 @@ private struct ConsolePatchOptionRow: View {
         .buttonStyle(ConsolePopoverRowButtonStyle())
         .onHover { hovering in
             isHovered = hovering
+        }
+    }
+
+    private var backgroundFill: Color {
+        if isSelected {
+            return accent.opacity(0.14)
+        }
+        return isHovered ? Color(hex: 0xEFEFF2) : Color(hex: 0xF7F7F8)
+    }
+
+    private var borderColor: Color {
+        if isSelected {
+            return Color.black.opacity(0.10)
+        }
+        return Color.black.opacity(isHovered ? 0.09 : 0.06)
+    }
+
+    private var shadowColor: Color {
+        isSelected || isHovered ? AppTheme.contactShadow.opacity(0.12) : .clear
+    }
+}
+
+private struct ConsolePatchOptionTile: View {
+    let title: String
+    let subtitle: String?
+    let accent: Color
+    let isSelected: Bool
+    let action: () -> Void
+
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 10) {
+                availabilityBadge
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title.uppercased())
+                        .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(Color.black.opacity(0.78))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.88)
+
+                    if let subtitle, !subtitle.isEmpty {
+                        Text(subtitle)
+                            .font(.system(size: 9, weight: .medium, design: .rounded))
+                            .foregroundStyle(AppTheme.labelInk.opacity(0.72))
+                            .lineLimit(1)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .frame(maxWidth: .infinity, minHeight: 58, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(backgroundFill)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .strokeBorder(borderColor, lineWidth: 1)
+                    )
+                    .shadow(color: shadowColor, radius: 4, y: 2)
+            )
+            .animation(.easeOut(duration: 0.14), value: isHovered)
+            .animation(.easeOut(duration: 0.14), value: isSelected)
+        }
+        .buttonStyle(ConsolePopoverRowButtonStyle())
+        .onHover { hovering in
+            isHovered = hovering
+        }
+    }
+
+    /// 用亮点状态表示该模型当前可用。
+    private var availabilityBadge: some View {
+        ZStack {
+            Circle()
+                .fill(isSelected ? accent.opacity(0.16) : Color(hex: isHovered ? 0xF0F1F4 : 0xF7F7F8))
+                .frame(width: 20, height: 20)
+                .overlay(
+                    Circle()
+                        .strokeBorder(Color.black.opacity(isSelected ? 0.10 : (isHovered ? 0.08 : 0.05)), lineWidth: 1)
+                )
+
+            Circle()
+                .fill(isSelected ? accent.opacity(0.96) : Color(hex: 0xB6BAC3))
+                .frame(width: 7, height: 7)
+                .shadow(color: (isSelected ? accent : Color.white).opacity(isSelected ? 0.52 : 0.20), radius: 4)
         }
     }
 
@@ -3521,46 +3953,161 @@ private struct ConsoleCapsuleButtonStyle: ButtonStyle {
     }
 }
 
-private struct FAQDocumentSheet: View {
+private struct HelpCenterSheet: View {
     @Environment(\.dismiss) private var dismiss
 
-    let sourceLabel: String
-    let markdown: String
-
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 18) {
             HStack(alignment: .firstTextBaseline) {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("UPSTREAM FAQ")
+                    Text("HELP CENTER")
                         .font(.system(size: 11, weight: .bold, design: .monospaced))
-                        .foregroundStyle(Color.secondary)
-                    Text(sourceLabel)
-                        .font(.system(size: 13, weight: .semibold, design: .monospaced))
-                        .foregroundStyle(Color.primary)
+                        .foregroundStyle(AppTheme.labelInk.opacity(0.66))
+                    Text("Swift RVC Mac quick guide")
+                        .font(.system(size: 18, weight: .semibold, design: .rounded))
+                        .foregroundStyle(AppTheme.valueInk)
                 }
                 Spacer()
                 Button("Close") {
                     dismiss()
                 }
                 .foregroundStyle(AppTheme.labelInk.opacity(0.82))
+                .buttonStyle(SheetHeaderActionButtonStyle())
                 .keyboardShortcut(.cancelAction)
             }
 
             ScrollView {
-                Text(renderedContent)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .textSelection(.enabled)
+                VStack(alignment: .leading, spacing: 16) {
+                    helpHeroCard
+                    helpSection(
+                        title: "START HERE",
+                        rows: [
+                            ("1", "BOOT the engine, then SYNC models and indexes."),
+                            ("2", "Choose VOICE MODEL, SPEAKER ID, and F0 METHOD in PATCH BAY."),
+                            ("3", "Use FILES for one file, or DIR / FILES for batch input."),
+                            ("4", "Press GO for single conversion, or LIVE for realtime voice change."),
+                        ]
+                    )
+                    helpSection(
+                        title: "PATCH BAY",
+                        rows: [
+                            ("VOICE MODEL", "Loads the target voice. Changing it unloads the previous model first."),
+                            ("SPEAKER ID", "Choose the speaker slot only for multi-speaker models. Single-speaker models stay on 0."),
+                            ("F0 METHOD", "Choose how pitch is extracted. CREPE is now the default. RMVPE is still the safest fallback when you want stability."),
+                        ]
+                    )
+                    helpSection(
+                        title: "LIVE CONTROLS",
+                        rows: [
+                            ("BUFFER", "Higher is safer, lower is faster."),
+                            ("GATE", "Higher cuts more noise, but can eat soft syllables."),
+                            ("WINDOW", "Higher is steadier, lower is more responsive."),
+                            ("FADE", "Higher smooths chunk joins, lower keeps attacks sharper."),
+                        ]
+                    )
+                    helpSection(
+                        title: "OFFLINE FADERS",
+                        rows: [
+                            ("PITCH", "Lower for deeper tone, higher for brighter tone."),
+                            ("INDEX", "Lower for cleaner output, higher for stronger target identity."),
+                            ("FILTER", "Lower keeps pitch detail, higher smooths pitch wobble."),
+                            ("RMS", "Higher keeps more of the source loudness contour."),
+                            ("GUARD", "Higher protects consonants and reduces brittle artifacts."),
+                        ]
+                    )
+                    helpSection(
+                        title: "TASK / RES",
+                        rows: [
+                            ("TASK", "Current task queue, active state, inputs, outputs, and errors."),
+                            ("RES", "History archive. You can filter, replay, reveal, merge, and delete old results."),
+                            ("DELETE", "Destructive actions now ask for confirmation before removing files."),
+                        ]
+                    )
+                    helpSection(
+                        title: "BG MIX",
+                        rows: [
+                            ("BG", "Preview the converted voice with its linked background track."),
+                            ("LVL", "Controls how loud the background track is. Lower isolates vocals, higher feels closer to a full song."),
+                            ("MERGE", "Exports the current foreground + background mix as a new result."),
+                        ]
+                    )
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
         .padding(20)
-        .frame(minWidth: 720, idealWidth: 840, minHeight: 520, idealHeight: 640)
+        .frame(minWidth: 760, idealWidth: 900, minHeight: 560, idealHeight: 700)
+        .background(AppTheme.consoleShellGradient)
     }
 
-    private var renderedContent: AttributedString {
-        if let attributed = try? AttributedString(markdown: markdown) {
-            return attributed
+    private var helpHeroCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Everything important is now grouped by the same areas you see on screen: PATCH BAY, ROUTE, REALTIME LAB, PATCH CONFIG, FADERS, TASK, RES, and BG MIX.")
+                .font(.system(size: 13, weight: .medium, design: .rounded))
+                .foregroundStyle(AppTheme.valueInk)
+            HStack(spacing: 10) {
+                helpChip("Default F0: CREPE")
+                helpChip("Use RMVPE when you want safer stability")
+                helpChip("Hover-independent ? buttons are available in UI")
+            }
         }
-        return AttributedString(markdown)
+        .padding(16)
+        .background(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(Color.white.opacity(0.42))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .strokeBorder(Color.black.opacity(0.06), lineWidth: 1)
+                )
+        )
+    }
+
+    private func helpSection(title: String, rows: [(String, String)]) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(title)
+                .font(.system(size: 12, weight: .bold, design: .monospaced))
+                .foregroundStyle(AppTheme.labelInk)
+            VStack(spacing: 8) {
+                ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
+                    HStack(alignment: .top, spacing: 10) {
+                        Text(row.0)
+                            .font(.system(size: 10, weight: .bold, design: .monospaced))
+                            .foregroundStyle(AppTheme.knobOrange)
+                            .frame(width: 100, alignment: .leading)
+                        Text(row.1)
+                            .font(.system(size: 12, weight: .medium, design: .rounded))
+                            .foregroundStyle(AppTheme.valueInk)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 10)
+                    .background(
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .fill(Color.white.opacity(0.28))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                    .strokeBorder(Color.black.opacity(0.05), lineWidth: 1)
+                            )
+                    )
+                }
+            }
+        }
+    }
+
+    private func helpChip(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 10, weight: .bold, design: .monospaced))
+            .foregroundStyle(AppTheme.labelInk.opacity(0.86))
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .background(
+                Capsule(style: .continuous)
+                    .fill(Color.white.opacity(0.36))
+                    .overlay(
+                        Capsule(style: .continuous)
+                            .strokeBorder(Color.black.opacity(0.06), lineWidth: 1)
+                    )
+            )
     }
 }
 
@@ -3614,6 +4161,14 @@ private struct ConsolePreviewWaveformPanel: View {
     @ObservedObject var audioPlayer: AudioPreviewPlayer
     let isRunning: Bool
     let tightHeight: Bool
+    let hasBackgroundTrack: Bool
+    let isBackgroundEnabled: Bool
+    let backgroundMixLevel: Double
+    let isPreparingBackgroundMix: Bool
+    let isPersistingBackgroundMix: Bool
+    let onToggleBackgroundMix: () -> Void
+    let onChangeBackgroundMixLevel: (Double) -> Void
+    let onMergeBackgroundMix: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: tightHeight ? 6 : 10) {
@@ -3631,6 +4186,81 @@ private struct ConsolePreviewWaveformPanel: View {
                 .buttonStyle(ConsoleRoundButtonStyle(accent: AppTheme.knobOrange))
                 .disabled(audioPlayer.loadedURL == nil)
                 .opacity(audioPlayer.loadedURL == nil ? 0.42 : 1)
+
+                Button(action: onToggleBackgroundMix) {
+                    HStack(spacing: 5) {
+                        Image(systemName: isBackgroundEnabled ? "waveform.badge.plus" : "waveform")
+                            .font(.system(size: tightHeight ? 9 : 10, weight: .bold))
+                        Text(isBackgroundEnabled ? "BG ON" : "BG")
+                            .font(.system(size: tightHeight ? 8 : 9, weight: .bold, design: .monospaced))
+                        if isPreparingBackgroundMix {
+                            ProgressView()
+                                .controlSize(.mini)
+                                .scaleEffect(0.6)
+                                .tint(mixButtonInk)
+                        }
+                    }
+                    .foregroundStyle(mixButtonInk)
+                    .padding(.horizontal, tightHeight ? 8 : 10)
+                    .frame(height: tightHeight ? 24 : 28)
+                    .background(
+                        Capsule(style: .continuous)
+                            .fill(mixButtonBackground)
+                            .overlay(
+                                Capsule(style: .continuous)
+                                    .strokeBorder(mixButtonBorder, lineWidth: 1)
+                            )
+                    )
+                }
+                .buttonStyle(.plain)
+                .disabled(!hasBackgroundTrack || audioPlayer.loadedURL == nil)
+                .opacity((hasBackgroundTrack && audioPlayer.loadedURL != nil) ? 1 : 0.42)
+
+                Button(action: onMergeBackgroundMix) {
+                    HStack(spacing: 5) {
+                        Image(systemName: "arrow.triangle.merge")
+                            .font(.system(size: tightHeight ? 9 : 10, weight: .bold))
+                        Text(isPersistingBackgroundMix ? "MIX..." : "MERGE")
+                            .font(.system(size: tightHeight ? 8 : 9, weight: .bold, design: .monospaced))
+                    }
+                    .foregroundStyle(mergeButtonInk)
+                    .padding(.horizontal, tightHeight ? 8 : 10)
+                    .frame(height: tightHeight ? 24 : 28)
+                    .background(
+                        Capsule(style: .continuous)
+                            .fill(mergeButtonFill)
+                            .overlay(
+                                Capsule(style: .continuous)
+                                    .strokeBorder(mergeButtonBorder, lineWidth: 1)
+                            )
+                    )
+                }
+                .buttonStyle(.plain)
+                .disabled(!hasBackgroundTrack || isPersistingBackgroundMix || audioPlayer.loadedURL == nil)
+                .opacity(hasBackgroundTrack ? 1 : 0.42)
+
+                HStack(spacing: 6) {
+                    HStack(spacing: 4) {
+                        Text("LVL")
+                            .font(.system(size: tightHeight ? 8 : 9, weight: .bold, design: .monospaced))
+                            .foregroundStyle(Color.white.opacity(0.62))
+                        Text("\(Int((backgroundMixLevel * 100).rounded()))%")
+                            .font(.system(size: tightHeight ? 8 : 9, weight: .bold, design: .monospaced))
+                            .foregroundStyle(Color.white.opacity(0.74))
+                            .frame(minWidth: tightHeight ? 28 : 32, alignment: .leading)
+                    }
+                    Slider(
+                        value: Binding(
+                            get: { backgroundMixLevel },
+                            set: { onChangeBackgroundMixLevel($0) }
+                        ),
+                        in: 0...1
+                    )
+                    .tint(AppTheme.knobBlue)
+                    .frame(width: tightHeight ? 72 : 96)
+                    .disabled(!hasBackgroundTrack)
+                }
+                .opacity(hasBackgroundTrack ? 1 : 0.38)
 
                 Slider(
                     value: Binding(
@@ -3691,6 +4321,44 @@ private struct ConsolePreviewWaveformPanel: View {
         guard !audioPlayer.waveformSamples.isEmpty else { return AppTheme.knobOrange }
         let playedCount = Int((Double(audioPlayer.waveformSamples.count) * audioPlayer.playbackProgress).rounded(.down))
         return index <= playedCount ? AppTheme.knobOrange : Color.white.opacity(0.72)
+    }
+
+    private var mixButtonBorder: Color {
+        (isBackgroundEnabled || isPreparingBackgroundMix) ? Color.white.opacity(0.30) : Color.white.opacity(0.12)
+    }
+
+    private var mixButtonInk: Color {
+        (isBackgroundEnabled || isPreparingBackgroundMix) ? Color.white.opacity(0.96) : Color.white.opacity(0.82)
+    }
+
+    private var mixButtonBackground: AnyShapeStyle {
+        if isBackgroundEnabled || isPreparingBackgroundMix {
+            return AnyShapeStyle(LinearGradient(
+                colors: [
+                    Color(hex: 0xFF3CAC).opacity(0.86),
+                    Color(hex: 0x562B7C).opacity(0.82),
+                    Color(hex: 0x2B86C5).opacity(0.84),
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            ))
+        }
+        return AnyShapeStyle(Color.white.opacity(0.12))
+    }
+
+    private var mergeButtonFill: Color {
+        if isPersistingBackgroundMix {
+            return AppTheme.knobOrange.opacity(0.28)
+        }
+        return Color.white.opacity(0.10)
+    }
+
+    private var mergeButtonBorder: Color {
+        isPersistingBackgroundMix ? AppTheme.knobOrange.opacity(0.42) : Color.white.opacity(0.12)
+    }
+
+    private var mergeButtonInk: Color {
+        isPersistingBackgroundMix ? AppTheme.knobOrange : Color.white.opacity(0.76)
     }
 
     private func timeLabel(_ value: TimeInterval) -> String {
@@ -3971,18 +4639,50 @@ private struct QueueInspectorSheet: View {
 }
 
 private struct ResultHistorySheet: View {
+    private enum PendingDestructiveAction: Identifiable {
+        case clear(TaskHistoryKind?)
+        case delete(TaskHistoryEntry)
+
+        var id: String {
+            switch self {
+            case .clear(let kind):
+                return "clear-\(kind?.rawValue ?? "all")"
+            case .delete(let entry):
+                return "delete-\(entry.id.uuidString)"
+            }
+        }
+    }
+
     let entries: [TaskHistoryEntry]
-    let onClear: () -> Void
+    let onClear: (TaskHistoryKind?) -> Void
+    let onDeleteEntry: (TaskHistoryEntry) -> Void
     let onLoadOutput: (TaskHistoryEntry) -> Void
     let onPlayOutput: (TaskHistoryEntry) -> Void
     let onRevealOutput: (TaskHistoryEntry) -> Void
 
     @Environment(\.dismiss) private var dismiss
     @State private var selectedKind: TaskHistoryKind?
+    @State private var pendingDestructiveAction: PendingDestructiveAction?
+
+    private var entriesByID: [UUID: TaskHistoryEntry] {
+        Dictionary(uniqueKeysWithValues: entries.map { ($0.id, $0) })
+    }
+
+    private var derivedCountByID: [UUID: Int] {
+        Dictionary(entries.compactMap { entry in
+            guard let sourceTaskID = entry.sourceTaskID else { return nil }
+            return (sourceTaskID, 1)
+        }, uniquingKeysWith: +)
+    }
 
     private var filteredEntries: [TaskHistoryEntry] {
         guard let selectedKind else { return entries }
         return entries.filter { $0.kind == selectedKind }
+    }
+
+    private var clearLabel: String {
+        guard let selectedKind else { return "CLEAR ALL" }
+        return "CLEAR \(selectedKind.rawValue.uppercased())"
     }
 
     var body: some View {
@@ -3999,8 +4699,8 @@ private struct ResultHistorySheet: View {
 
                 Spacer()
 
-                Button("CLEAR") {
-                    onClear()
+                Button(clearLabel) {
+                    pendingDestructiveAction = .clear(selectedKind)
                 }
                 .buttonStyle(SheetHeaderActionButtonStyle())
                 .disabled(entries.isEmpty)
@@ -4039,6 +4739,11 @@ private struct ResultHistorySheet: View {
                         ForEach(filteredEntries) { entry in
                             ResultHistoryCard(
                                 entry: entry,
+                                relatedEntriesByID: entriesByID,
+                                derivedCount: derivedCountByID[entry.id] ?? 0,
+                                onDelete: {
+                                    pendingDestructiveAction = .delete(entry)
+                                },
                                 onLoadOutput: {
                                     onLoadOutput(entry)
                                     dismiss()
@@ -4057,6 +4762,40 @@ private struct ResultHistorySheet: View {
         .padding(20)
         .frame(minWidth: 760, minHeight: 540)
         .background(AppTheme.consoleShellGradient)
+        .alert(item: $pendingDestructiveAction) { action in
+            switch action {
+            case .clear(let kind):
+                return Alert(
+                    title: Text("Delete history?"),
+                    message: Text(clearConfirmationMessage(kind: kind)),
+                    primaryButton: .destructive(Text(clearLabelForConfirmation(kind: kind))) {
+                        onClear(kind)
+                    },
+                    secondaryButton: .cancel()
+                )
+            case .delete(let entry):
+                return Alert(
+                    title: Text("Delete this record?"),
+                    message: Text("This will remove the history entry and delete its stored outputs from disk when they still exist."),
+                    primaryButton: .destructive(Text("Delete \(entry.kind.rawValue.capitalized)")) {
+                        onDeleteEntry(entry)
+                    },
+                    secondaryButton: .cancel()
+                )
+            }
+        }
+    }
+
+    private func clearLabelForConfirmation(kind: TaskHistoryKind?) -> String {
+        guard let kind else { return "Delete all" }
+        return "Delete \(kind.rawValue)"
+    }
+
+    private func clearConfirmationMessage(kind: TaskHistoryKind?) -> String {
+        if let kind {
+            return "This will remove every \(kind.rawValue) history record in the current filter and delete the related stored outputs from disk."
+        }
+        return "This will remove every history record and delete all related stored outputs from disk."
     }
 
     private var historyFilterBar: some View {
@@ -4072,6 +4811,9 @@ private struct ResultHistorySheet: View {
             }
             historyFilterChip(label: "LIVE", count: entries.filter { $0.kind == .realtime }.count, isSelected: selectedKind == .realtime) {
                 selectedKind = .realtime
+            }
+            historyFilterChip(label: "UVR", count: entries.filter { $0.kind == .uvr }.count, isSelected: selectedKind == .uvr) {
+                selectedKind = .uvr
             }
             Spacer()
         }
@@ -4109,6 +4851,9 @@ private struct ResultHistorySheet: View {
 
 private struct ResultHistoryCard: View {
     let entry: TaskHistoryEntry
+    let relatedEntriesByID: [UUID: TaskHistoryEntry]
+    let derivedCount: Int
+    let onDelete: () -> Void
     let onLoadOutput: () -> Void
     let onPlayOutput: () -> Void
     let onRevealOutput: () -> Void
@@ -4157,23 +4902,46 @@ private struct ResultHistoryCard: View {
                 historyRow("MODEL", entry.modelName ?? "NONE")
                 historyRow("INPUT", entry.inputLabel ?? "NONE", copyValue: entry.inputPath)
                 historyRow("OUTPUT", entry.outputLabel ?? "NONE", copyValue: entry.outputPath)
+                historyRow("STORE", entry.taskDirectoryPath.map(lastPath) ?? "NONE", copyValue: entry.taskDirectoryPath)
+                if let mergedArtifact {
+                    historyRow("MERGED", mergedArtifact.label, accent: AppTheme.knobBlue, copyValue: mergedArtifact.path)
+                }
                 historyRow("FILE", outputStateLabel, accent: outputStateAccent)
                 historyRow("LEN", outputDurationLabel)
                 historyRow("INDEX", entry.indexPath.map(lastPath) ?? "AUTO", copyValue: entry.indexPath)
                 historyRow("F0", entry.f0Method?.uppercased() ?? "—")
                 historyRow("SPK", entry.speakerID.map(String.init) ?? "—")
+                if let sourceEntry {
+                    historyRow("SOURCE", "\(sourceEntry.kind.rawValue.uppercased()) / \(sourceEntry.title.uppercased())")
+                }
+                if let sourceEntry, sourceEntry.kind == .uvr {
+                    if let sourceVocal = sourceEntry.outputArtifacts.first(where: { $0.role == .uvrVocal }) {
+                        historyRow("SRC VOC", sourceVocal.label, copyValue: sourceVocal.path)
+                    }
+                    if let sourceInstrumental = sourceEntry.outputArtifacts.first(where: { $0.role == .uvrInstrumental }) {
+                        historyRow("SRC INS", sourceInstrumental.label, copyValue: sourceInstrumental.path)
+                    }
+                }
+                if entry.kind == .uvr {
+                    historyRow("VOCALS", "\(entry.outputArtifacts.filter { $0.role == .uvrVocal }.count)")
+                    historyRow("INST", "\(entry.outputArtifacts.filter { $0.role == .uvrInstrumental }.count)")
+                    historyRow("USED BY", "\(derivedCount)")
+                }
                 if let errorMessage = entry.errorMessage, !errorMessage.isEmpty {
                     historyRow("ERROR", errorMessage, accent: AppTheme.knobOrange, copyValue: errorMessage)
                 }
             }
 
             HStack(spacing: 8) {
-                if case .file = outputState {
+                if hasPlayableOutput {
                     buttonChip(label: "LOAD", action: onLoadOutput)
                     buttonChip(label: "PLAY", action: onPlayOutput)
+                }
+                if entry.outputPath != nil || entry.taskDirectoryPath != nil {
                     buttonChip(label: "OPEN", action: onRevealOutput)
                 }
                 buttonChip(label: "COPY", action: copyRecord)
+                destructiveChip(label: "DELETE", action: onDelete)
             }
         }
         .padding(14)
@@ -4195,19 +4963,40 @@ private struct ResultHistoryCard: View {
             return AppTheme.knobBlue
         case .realtime:
             return AppTheme.ledGreen
+        case .uvr:
+            return AppTheme.knobOrange
         }
     }
 
+    private var sourceEntry: TaskHistoryEntry? {
+        guard let sourceTaskID = entry.sourceTaskID else { return nil }
+        return relatedEntriesByID[sourceTaskID]
+    }
+
+    private var mergedArtifact: TaskHistoryArtifact? {
+        entry.outputArtifacts.first(where: { $0.role == .mixedOutput })
+    }
+
+    private var hasPlayableOutput: Bool {
+        if case .file = outputState {
+            return true
+        }
+        return false
+    }
+
     private var outputState: ArtifactState {
-        guard let outputPath = entry.outputPath, !outputPath.isEmpty else { return .unavailable }
+        let candidatePath = mergedArtifact?.path
+            ?? entry.outputPath
+            ?? entry.outputArtifacts.first(where: { $0.role == .singleOutput || $0.role == .uvrVocal })?.path
+        guard let candidatePath, !candidatePath.isEmpty else { return .unavailable }
         var isDirectory: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: outputPath, isDirectory: &isDirectory) else {
+        guard FileManager.default.fileExists(atPath: candidatePath, isDirectory: &isDirectory) else {
             return .missing
         }
         if isDirectory.boolValue {
             return .directory
         }
-        let url = URL(fileURLWithPath: outputPath)
+        let url = URL(fileURLWithPath: candidatePath)
         guard let file = try? AVAudioFile(forReading: url) else {
             return .file(nil)
         }
@@ -4311,6 +5100,23 @@ private struct ResultHistoryCard: View {
             )
     }
 
+    private func destructiveChip(label: String, action: @escaping () -> Void) -> some View {
+        Button(label, action: action)
+            .buttonStyle(.plain)
+            .font(.system(size: 8, weight: .bold, design: .monospaced))
+            .foregroundStyle(AppTheme.knobOrange.opacity(0.92))
+            .padding(.horizontal, 8)
+            .padding(.vertical, 5)
+            .background(
+                Capsule(style: .continuous)
+                    .fill(AppTheme.knobOrange.opacity(0.10))
+                    .overlay(
+                        Capsule(style: .continuous)
+                            .strokeBorder(AppTheme.knobOrange.opacity(0.24), lineWidth: 1)
+                    )
+            )
+    }
+
     private func copyRecord() {
         let lines = [
             "time: \(entry.timestamp.formatted(date: .abbreviated, time: .standard))",
@@ -4321,9 +5127,12 @@ private struct ResultHistoryCard: View {
             "model: \(entry.modelName ?? "none")",
             "input: \(entry.inputPath ?? entry.inputLabel ?? "none")",
             "output: \(entry.outputPath ?? entry.outputLabel ?? "none")",
+            "merged: \(mergedArtifact?.path ?? "none")",
+            "store: \(entry.taskDirectoryPath ?? "none")",
             "index: \(entry.indexPath ?? "auto")",
             "f0: \(entry.f0Method ?? "—")",
             "speaker: \(entry.speakerID.map(String.init) ?? "—")",
+            "sourceTask: \(entry.sourceTaskID?.uuidString ?? "none")",
             "error: \(entry.errorMessage ?? "none")",
         ]
         NSPasteboard.general.clearContents()

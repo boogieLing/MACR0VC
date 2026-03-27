@@ -5,11 +5,11 @@ final class InferenceViewModel: ObservableObject {
     private enum Defaults {
         static let speakerID = 0
         static let transpose = 0.0
-        static let f0Method: F0Method = .rmvpe
+        static let f0Method: F0Method = .crepe
         static let indexRate = 0.75
         static let filterRadius = 3.0
         static let resampleSR = 0.0
-        static let rmsMixRate = 0.25
+        static let rmsMixRate = 1.0
         static let protect = 0.33
     }
 
@@ -28,6 +28,7 @@ final class InferenceViewModel: ObservableObject {
     @Published var isRunning = false
     @Published var outputMessage = ""
     @Published var outputAudioURL: URL?
+    @Published private(set) var outputDirectoryURL: URL?
     @Published var errorMessage: String?
     @Published private(set) var runStartedAt: Date?
     @Published private(set) var lastRunSummary: String?
@@ -74,10 +75,11 @@ final class InferenceViewModel: ObservableObject {
     }
 
     /// Validates local state, serializes the request, and dispatches a single-file conversion.
-    func convert(selectedModelName: String?) async {
+    func convert(selectedModelName: String?, outputDirectoryURL: URL) async {
         errorMessage = nil
         outputMessage = ""
         outputAudioURL = nil
+        self.outputDirectoryURL = outputDirectoryURL
 
         guard let selectedModelName else {
             errorMessage = ValidationError.missingModel.errorDescription
@@ -92,6 +94,7 @@ final class InferenceViewModel: ObservableObject {
         let request = SingleInferenceRequest(
             modelName: selectedModelName,
             inputFileURL: inputFileURL,
+            outputDirectoryURL: outputDirectoryURL,
             speakerID: speakerID,
             transpose: transpose,
             f0Method: f0Method,
@@ -118,6 +121,7 @@ final class InferenceViewModel: ObservableObject {
             let duration = Date().timeIntervalSince(startedAt)
             outputMessage = result.message
             outputAudioURL = result.outputAudioURL
+            self.outputDirectoryURL = result.outputDirectoryURL ?? outputDirectoryURL
             audioPlayer.load(url: result.outputAudioURL)
             lastRunSummary = L10n.tr(
                 "status.summary.single",

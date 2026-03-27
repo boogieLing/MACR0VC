@@ -35,7 +35,14 @@ struct SingleConvertView: View {
 
                     HStack(spacing: 12) {
                         Button(inferenceViewModel.isRunning ? L10n.tr("action.converting") : L10n.tr("action.convert")) {
-                            Task { await inferenceViewModel.convert(selectedModelName: selectedModelName) }
+                            let fallbackOutputDirectory = inferenceViewModel.outputDirectoryURL
+                                ?? URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+                            Task {
+                                await inferenceViewModel.convert(
+                                    selectedModelName: selectedModelName,
+                                    outputDirectoryURL: fallbackOutputDirectory
+                                )
+                            }
                         }
                         .buttonStyle(.borderedProminent)
                         .disabled(inferenceViewModel.isRunning || engineState != .ready)

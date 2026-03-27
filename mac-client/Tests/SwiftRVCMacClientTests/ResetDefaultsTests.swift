@@ -72,12 +72,12 @@ final class ResetDefaultsTests: XCTestCase {
         viewModel.resetParameterDefaults()
 
         XCTAssertEqual(viewModel.speakerID, 0)
-        XCTAssertEqual(viewModel.f0Method, .rmvpe)
+        XCTAssertEqual(viewModel.f0Method, .crepe)
         XCTAssertEqual(viewModel.transpose, 0)
         XCTAssertEqual(viewModel.indexRate, 0.75)
         XCTAssertEqual(viewModel.filterRadius, 3)
         XCTAssertEqual(viewModel.resampleSR, 0)
-        XCTAssertEqual(viewModel.rmsMixRate, 0.25)
+        XCTAssertEqual(viewModel.rmsMixRate, 1)
         XCTAssertEqual(viewModel.protect, 0.33)
     }
 
@@ -98,9 +98,9 @@ final class ResetDefaultsTests: XCTestCase {
         viewModel.resetParameterDefaults()
 
         XCTAssertEqual(viewModel.speakerID, 0)
-        XCTAssertEqual(viewModel.f0Method, .rmvpe)
+        XCTAssertEqual(viewModel.f0Method, .crepe)
         XCTAssertEqual(viewModel.transpose, 0)
-        XCTAssertEqual(viewModel.indexRate, 1)
+        XCTAssertEqual(viewModel.indexRate, 0.75)
         XCTAssertEqual(viewModel.filterRadius, 3)
         XCTAssertEqual(viewModel.resampleSR, 0)
         XCTAssertEqual(viewModel.rmsMixRate, 1)

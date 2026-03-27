@@ -14,8 +14,28 @@ struct AppEnvironment {
         engineRoot.appendingPathComponent("assets/indices", isDirectory: true)
     }
 
+    var unifiedStorageRootDirectory: URL {
+        repoRoot.appendingPathComponent("storage", isDirectory: true)
+    }
+
+    var defaultSingleOutputDirectory: URL {
+        unifiedStorageRootDirectory.appendingPathComponent("outputs/single", isDirectory: true)
+    }
+
     var defaultBatchOutputDirectory: URL {
-        engineRoot.appendingPathComponent("opt", isDirectory: true)
+        unifiedStorageRootDirectory.appendingPathComponent("outputs/batch", isDirectory: true)
+    }
+
+    var defaultUVROutputDirectory: URL {
+        unifiedStorageRootDirectory.appendingPathComponent("outputs/uvr", isDirectory: true)
+    }
+
+    var defaultONNXExportDirectory: URL {
+        unifiedStorageRootDirectory.appendingPathComponent("exports/onnx", isDirectory: true)
+    }
+
+    var backgroundPreviewCacheDirectory: URL {
+        unifiedStorageRootDirectory.appendingPathComponent("previews/background-mix", isDirectory: true)
     }
 
     var preferredPythonExecutable: String {

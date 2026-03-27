@@ -6,8 +6,8 @@ final class BatchViewModel: ObservableObject {
     private enum Defaults {
         static let speakerID = 0
         static let transpose = 0.0
-        static let f0Method: F0Method = .rmvpe
-        static let indexRate = 1.0
+        static let f0Method: F0Method = .crepe
+        static let indexRate = 0.75
         static let filterRadius = 3.0
         static let resampleSR = 0.0
         static let rmsMixRate = 1.0
@@ -33,6 +33,7 @@ final class BatchViewModel: ObservableObject {
     @Published var outputMessage = ""
     @Published var errorMessage: String?
     @Published private(set) var lastRunSummary: String?
+    @Published private(set) var outputFileURLs: [URL] = []
 
     private let bridgeClient: RVCBridgeClient
 
@@ -78,6 +79,7 @@ final class BatchViewModel: ObservableObject {
     func convert(selectedModelName: String?) async {
         errorMessage = nil
         outputMessage = ""
+        outputFileURLs = []
 
         guard let selectedModelName else {
             errorMessage = ValidationError.missingModel.errorDescription
@@ -114,6 +116,7 @@ final class BatchViewModel: ObservableObject {
             let result = try await bridgeClient.convertBatch(request)
             let duration = Date().timeIntervalSince(startedAt)
             outputMessage = result.message
+            outputFileURLs = result.outputFileURLs
             lastRunSummary = L10n.tr(
                 "status.summary.batch",
                 duration.formatted(.number.precision(.fractionLength(1)))

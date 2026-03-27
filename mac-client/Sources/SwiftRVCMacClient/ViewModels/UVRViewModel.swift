@@ -15,6 +15,8 @@ final class UVRViewModel: ObservableObject {
     @Published var errorMessage: String?
     @Published private(set) var runStartedAt: Date?
     @Published private(set) var lastRunSummary: String?
+    @Published private(set) var vocalOutputFileURLs: [URL] = []
+    @Published private(set) var instrumentalOutputFileURLs: [URL] = []
 
     private let bridgeClient: RVCBridgeClient
 
@@ -35,13 +37,18 @@ final class UVRViewModel: ObservableObject {
     func convert() async {
         errorMessage = nil
         outputMessage = ""
+        vocalOutputFileURLs = []
+        instrumentalOutputFileURLs = []
 
         guard let selectedModelName else {
             errorMessage = ValidationError.missingModel.errorDescription
             return
         }
 
-        guard let vocalOutputDirectoryURL, let instrumentalOutputDirectoryURL else {
+        guard
+            let selectedVocalOutputDirectoryURL = vocalOutputDirectoryURL,
+            let selectedInstrumentalOutputDirectoryURL = instrumentalOutputDirectoryURL
+        else {
             errorMessage = L10n.tr("validation.batch.output_directory")
             return
         }
@@ -50,8 +57,8 @@ final class UVRViewModel: ObservableObject {
             modelName: selectedModelName,
             inputDirectoryURL: inputDirectoryURL,
             inputFileURLs: inputFileURLs,
-            vocalOutputDirectoryURL: vocalOutputDirectoryURL,
-            instrumentalOutputDirectoryURL: instrumentalOutputDirectoryURL,
+            vocalOutputDirectoryURL: selectedVocalOutputDirectoryURL,
+            instrumentalOutputDirectoryURL: selectedInstrumentalOutputDirectoryURL,
             format: format
         )
 
@@ -67,6 +74,10 @@ final class UVRViewModel: ObservableObject {
             let result = try await bridgeClient.convertUVR(request)
             let duration = Date().timeIntervalSince(startedAt)
             outputMessage = result.message
+            vocalOutputDirectoryURL = result.vocalOutputDirectoryURL ?? selectedVocalOutputDirectoryURL
+            instrumentalOutputDirectoryURL = result.instrumentalOutputDirectoryURL ?? selectedInstrumentalOutputDirectoryURL
+            vocalOutputFileURLs = result.vocalOutputFileURLs
+            instrumentalOutputFileURLs = result.instrumentalOutputFileURLs
             lastRunSummary = "UVR finished in \(duration.formatted(.number.precision(.fractionLength(1))))s"
         } catch {
             errorMessage = error.localizedDescription
