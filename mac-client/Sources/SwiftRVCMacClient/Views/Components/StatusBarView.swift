@@ -19,6 +19,11 @@ struct StatusBarView: View {
                 systemImage: "point.3.connected.trianglepath.dotted"
             )
             StatusPill(
+                label: "Backend",
+                value: engineController.backendVersionLabel,
+                systemImage: "server.rack"
+            )
+            StatusPill(
                 label: L10n.tr("status.model"),
                 value: selectedModelName ?? L10n.tr("status.none"),
                 systemImage: "square.stack.3d.up"

@@ -26,6 +26,20 @@ struct BusyDescriptor: Equatable {
     let priority: Int
 }
 
+enum PrimaryInputMode: String, Equatable {
+    case file
+    case text
+
+    var queueLabel: String {
+        switch self {
+        case .file:
+            return "File / audio"
+        case .text:
+            return "Text prompt"
+        }
+    }
+}
+
 @MainActor
 final class AppState: ObservableObject {
     @Published var navigation: NavigationDestination = .singleConvert
@@ -46,6 +60,25 @@ final class AppState: ObservableObject {
     @Published var appMemoryLabel = "—"
     @Published var engineMemoryLabel = "—"
     @Published private(set) var taskHistory: [TaskHistoryEntry] = []
+    @Published var primaryInputMode: PrimaryInputMode = .file
+    @Published var textAudioInput = ""
+    @Published var selectedTextAudioGender: TextAudioGenderID = .female
+    @Published var selectedTextAudioToneMode: TextAudioToneMode = .preset
+    @Published var selectedTextAudioTonePreset: TextAudioTonePresetID? = .femaleNatural
+    @Published var customTextAudioTone = ""
+    @Published var selectedTextAudioMatchProfile: TextAudioMatchProfileID = .identityLock
+    @Published var textAudioTranspose: Double = 11
+    @Published var textAudioSpeechRate: TextAudioSpeechRateID = .medium
+    @Published var textAudioF0Method: F0Method = .crepe
+    @Published var textAudioIndexRate: Double = 0.92
+    @Published var textAudioFilterRadius: Double = 3
+    @Published var textAudioResampleSR: Double = 0
+    @Published var textAudioRmsMixRate: Double = 0.88
+    @Published var textAudioProtect: Double = 0.08
+    @Published private(set) var textAudioErrorMessage: String?
+    @Published private(set) var isGeneratingTextAudio = false
+    @Published private(set) var textAudioRunStartedAt: Date?
+    @Published private(set) var textAudioProgress: TextAudioProgressSnapshot?
     @Published private(set) var backgroundAudioURL: URL?
     @Published var isBackgroundMixEnabled = false
     @Published var backgroundMixLevel = 0.34
@@ -74,11 +107,13 @@ final class AppState: ObservableObject {
     private var toastDismissTask: Task<Void, Never>?
     private var metricsTask: Task<Void, Never>?
     private var backgroundPreviewRefreshTask: Task<Void, Never>?
+    private var textAudioProgressTask: Task<Void, Never>?
     private var busyDescriptors: [BusyScope: BusyDescriptor] = [:]
     private let taskHistoryDefaultsKey = "local.r0.SwiftRVCMacClient.taskHistory.v1"
     private let maxTaskHistoryCount = 80
     private var pendingSingleReservation: ManagedTaskOutputReservation?
     private var pendingBatchReservation: ManagedTaskOutputReservation?
+    private var pendingTextAudioReservation: ManagedTaskOutputReservation?
     private var pendingUVRReservation: ManagedTaskOutputReservation?
     private var currentBackgroundPreviewURL: URL?
 
@@ -346,6 +381,21 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// 重新探测并切换到兼容版本的后端实例，避免前端挂到旧引擎。
+    func refreshEngineConnection() async {
+        statusMessage = "Refreshing backend connection..."
+        await engineController.refreshConnection()
+        if engineController.state == .ready {
+            statusMessage = "Connected to backend \(engineController.backendVersionLabel) on \(availablePortDescription)."
+            presentToast(message: statusMessage, style: .success)
+            await refreshModels()
+            await refreshRealtimeContext()
+        } else if let lastError = engineController.lastError {
+            statusMessage = lastError
+            presentToast(message: lastError, style: .error)
+        }
+    }
+
     /// 停止本地引擎并广播已停止状态。
     func stopEngine() {
         engineController.stop()
@@ -402,6 +452,7 @@ final class AppState: ObservableObject {
 
     /// 设置单文件输入音频，保留批处理输入队列不变。
     func setSingleInputFileURL(_ url: URL?) {
+        primaryInputMode = .file
         inferenceViewModel.inputFileURL = url
         guard let url else { return }
         let message = "Loaded file \(url.lastPathComponent). Ready for single convert."
@@ -411,6 +462,7 @@ final class AppState: ObservableObject {
 
     /// 设置批处理输入目录，并清理互斥的显式文件队列与单文件输入。
     func setBatchInputDirectoryURL(_ url: URL?) {
+        primaryInputMode = .file
         batchViewModel.inputDirectoryURL = url
         if url != nil {
             batchViewModel.inputFileURLs = []
@@ -420,6 +472,7 @@ final class AppState: ObservableObject {
 
     /// 设置批处理输入文件集合，并在仅选中一个文件时同步为单文件输入。
     func setBatchInputFileURLs(_ urls: [URL]) {
+        primaryInputMode = .file
         batchViewModel.inputFileURLs = urls
         if !urls.isEmpty {
             batchViewModel.inputDirectoryURL = nil
@@ -434,6 +487,150 @@ final class AppState: ObservableObject {
         }
         statusMessage = message
         presentToast(message: message, style: .success)
+    }
+
+    /// 设置文本转音频输入，并清理互斥的文件型输入来源。
+    func setTextAudioInput(_ text: String) {
+        let trimmedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        primaryInputMode = .text
+        textAudioInput = trimmedText
+        textAudioErrorMessage = nil
+        textAudioProgress = nil
+        inferenceViewModel.inputFileURL = nil
+        batchViewModel.inputDirectoryURL = nil
+        batchViewModel.inputFileURLs = []
+        guard !trimmedText.isEmpty else { return }
+        let preview = String(trimmedText.prefix(32))
+        let message = "Loaded text prompt: \(preview)"
+        statusMessage = message
+        presentToast(message: message, style: .success)
+    }
+
+    /// 返回当前性别下可用的 tone preset，避免 UI 继续展示无效组合。
+    var availableTextAudioTonePresets: [TextAudioTonePresetID] {
+        TextAudioTonePresetID.presets(for: selectedTextAudioGender)
+    }
+
+    /// 统一返回当前 text-audio 要使用的 tone preset，自定义语气时回退到性别默认基线。
+    var effectiveTextAudioTonePreset: TextAudioTonePresetID {
+        if let selectedTextAudioTonePreset, availableTextAudioTonePresets.contains(selectedTextAudioTonePreset) {
+            return selectedTextAudioTonePreset
+        }
+        return selectedTextAudioGender.defaultTonePreset
+    }
+
+    /// 当前语气标签需要同时支持预设与自定义文本。
+    var effectiveTextAudioToneLabel: String {
+        if selectedTextAudioToneMode == .custom {
+            let trimmedCustomTone = customTextAudioTone.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmedCustomTone.isEmpty ? "Custom tone" : trimmedCustomTone
+        }
+        return effectiveTextAudioTonePreset.displayName
+    }
+
+    /// 根据当前目标模型做保守性别推断，仅用于 text-to-audio 自动参数收敛。
+    var effectiveTextAudioTargetGenderHint: TargetVoiceGenderHint {
+        TargetVoiceGenderHint.infer(
+            modelName: selectedModelName,
+            infoSummary: modelInfoSummary
+        )
+    }
+
+    /// 将当前可调主参数打包成统一结构，便于请求、摘要和历史共用。
+    var effectiveTextAudioParameterBundle: TextAudioParameterBundle {
+        TextAudioParameterBundle(
+            transpose: textAudioTranspose,
+            speechRate: textAudioSpeechRate,
+            f0Method: textAudioF0Method,
+            indexRate: textAudioIndexRate,
+            filterRadius: textAudioFilterRadius,
+            resampleSR: textAudioResampleSR,
+            rmsMixRate: textAudioRmsMixRate,
+            protect: textAudioProtect
+        )
+        .normalized(
+            for: selectedTextAudioGender,
+            targetGenderHint: effectiveTextAudioTargetGenderHint
+        )
+    }
+
+    /// 切换文本任务性别基线时，顺带修正 tone preset 与默认参数。
+    func setTextAudioGender(_ gender: TextAudioGenderID) {
+        guard selectedTextAudioGender != gender else { return }
+        selectedTextAudioGender = gender
+        if let selectedTextAudioTonePreset {
+            if !availableTextAudioTonePresets.contains(selectedTextAudioTonePreset) {
+                self.selectedTextAudioTonePreset = gender.defaultTonePreset
+            }
+        } else {
+            selectedTextAudioTonePreset = gender.defaultTonePreset
+        }
+        applyTextAudioDefaultsFromSelection()
+    }
+
+    /// 预设模式下直接选择 tone，并重新套用目标音色匹配参数。
+    func setTextAudioTonePreset(_ preset: TextAudioTonePresetID) {
+        selectedTextAudioGender = preset.gender
+        selectedTextAudioToneMode = .preset
+        selectedTextAudioTonePreset = preset
+        if selectedTextAudioMatchProfile == .customToneLock {
+            selectedTextAudioMatchProfile = .identityLock
+        }
+        applyTextAudioDefaultsFromSelection()
+    }
+
+    /// 在 preset / custom 间切换时，同时校正允许使用的匹配策略。
+    func setTextAudioToneMode(_ mode: TextAudioToneMode) {
+        guard selectedTextAudioToneMode != mode else { return }
+        selectedTextAudioToneMode = mode
+        switch mode {
+        case .preset:
+            if selectedTextAudioTonePreset == nil {
+                selectedTextAudioTonePreset = selectedTextAudioGender.defaultTonePreset
+            }
+            if selectedTextAudioMatchProfile == .customToneLock {
+                selectedTextAudioMatchProfile = .identityLock
+            }
+        case .custom:
+            selectedTextAudioMatchProfile = .customToneLock
+        }
+        applyTextAudioDefaultsFromSelection()
+    }
+
+    /// 匹配策略直接映射到参数默认值，因此在切换后立即覆盖当前 tune。
+    func setTextAudioMatchProfile(_ profile: TextAudioMatchProfileID) {
+        guard selectedTextAudioMatchProfile != profile else { return }
+        selectedTextAudioMatchProfile = profile
+        applyTextAudioDefaultsFromSelection()
+    }
+
+    /// 当用户回到自动推荐值时，用当前 gender / tone / match profile 重新铺满主参数。
+    func applyTextAudioDefaultsFromSelection() {
+        let defaultBundle = effectiveTextAudioTonePreset
+            .baseParameterBundle
+            .applying(matchProfile: selectedTextAudioMatchProfile)
+            .normalized(
+                for: selectedTextAudioGender,
+                targetGenderHint: effectiveTextAudioTargetGenderHint
+            )
+        textAudioTranspose = defaultBundle.transpose
+        textAudioSpeechRate = defaultBundle.speechRate
+        textAudioF0Method = defaultBundle.f0Method
+        textAudioIndexRate = defaultBundle.indexRate
+        textAudioFilterRadius = defaultBundle.filterRadius
+        textAudioResampleSR = defaultBundle.resampleSR
+        textAudioRmsMixRate = defaultBundle.rmsMixRate
+        textAudioProtect = defaultBundle.protect
+    }
+
+    /// 当目标模型已明显是女声且源声线也选择女声时，主动撤掉自动升调，避免二次抬高。
+    private func syncTextAudioTransposeForSelectedModel() {
+        guard selectedTextAudioGender == .female, effectiveTextAudioTargetGenderHint == .female else {
+            return
+        }
+        if textAudioTranspose > 0 {
+            textAudioTranspose = 0
+        }
     }
 
     /// 设置共享自定义索引文件，并覆盖两个推理面板的当前索引来源。
@@ -539,6 +736,7 @@ final class AppState: ObservableObject {
                 models[modelIndex].infoSummary = sanitizedSummary
                 models[modelIndex].speakerCount = result.speakerCount
             }
+            syncTextAudioTransposeForSelectedModel()
             if let modelInfoError = result.modelInfoError?.trimmingCharacters(in: .whitespacesAndNewlines),
                !modelInfoError.isEmpty {
                 statusMessage = "Model loaded, but metadata inspection failed: \(modelInfoError)"
@@ -725,6 +923,177 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// 使用后端 ChatTTS 先生成源语音，再套用当前模型做文本转音频。
+    func runTextAudioGenerate() async {
+        let trimmedText = textAudioInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedText.isEmpty else {
+            textAudioErrorMessage = "Enter some text before generating audio."
+            statusMessage = textAudioErrorMessage ?? "Enter some text before generating audio."
+            presentToast(message: statusMessage, style: .info)
+            return
+        }
+        guard let selectedModelName else {
+            textAudioErrorMessage = ValidationError.missingModel.errorDescription
+            statusMessage = textAudioErrorMessage ?? "Load a voice model before generating text audio."
+            presentToast(message: statusMessage, style: .info)
+            return
+        }
+        if engineController.state != .ready {
+            textAudioErrorMessage = "Start the engine before generating target voice audio."
+            statusMessage = textAudioErrorMessage ?? "Start the engine before generating target voice audio."
+            presentToast(message: statusMessage, style: .info)
+            return
+        }
+        do {
+            let reservation = try managedOutputStorage.reserveTextAudioOutput(for: trimmedText)
+            pendingTextAudioReservation = reservation
+            textAudioErrorMessage = nil
+            textAudioProgress = TextAudioProgressSnapshot(
+                active: true,
+                stage: .preparing,
+                title: "Prepare task",
+                detail: "Validating text input and reserving the output path.",
+                completedSteps: 0,
+                totalSteps: 5,
+                modelName: selectedModelName,
+                stageElapsedSeconds: 0,
+                totalElapsedSeconds: 0,
+                stageDurations: [:]
+            )
+            isGeneratingTextAudio = true
+            let startedAt = Date()
+            textAudioRunStartedAt = startedAt
+            startTextAudioProgressPolling()
+            defer {
+                textAudioProgressTask?.cancel()
+                textAudioProgressTask = nil
+                isGeneratingTextAudio = false
+                textAudioRunStartedAt = nil
+            }
+            let normalizedBundle = effectiveTextAudioParameterBundle
+
+            let request = TextAudioRequest(
+                modelName: selectedModelName,
+                text: trimmedText,
+                outputDirectoryURL: reservation.primaryOutputDirectoryURL,
+                gender: selectedTextAudioGender,
+                toneMode: selectedTextAudioToneMode,
+                tonePreset: selectedTextAudioToneMode == .preset ? effectiveTextAudioTonePreset : nil,
+                customToneText: customTextAudioTone,
+                matchProfile: selectedTextAudioMatchProfile,
+                speakerID: inferenceViewModel.speakerID,
+                transpose: normalizedBundle.transpose,
+                speechRate: normalizedBundle.speechRate,
+                f0Method: normalizedBundle.f0Method,
+                indexPath: inferenceViewModel.selectedIndexPath,
+                customIndexURL: inferenceViewModel.customIndexURL,
+                indexRate: normalizedBundle.indexRate,
+                filterRadius: normalizedBundle.filterRadius,
+                resampleSR: normalizedBundle.resampleSR,
+                rmsMixRate: normalizedBundle.rmsMixRate,
+                protect: normalizedBundle.protect
+            )
+            try request.validate()
+            let result = try await bridgeClient.convertTextAudio(request)
+            let outputURL = result.outputAudioURL
+            let duration = Date().timeIntervalSince(startedAt)
+            let completionSnapshot = (try? await bridgeClient.fetchTextAudioProgress())
+                ?? TextAudioProgressSnapshot(
+                    active: false,
+                    stage: .completed,
+                    title: "Text task complete",
+                    detail: "Generated speech and converted it into the selected voice model.",
+                    completedSteps: 5,
+                    totalSteps: 5,
+                    modelName: selectedModelName,
+                    stageElapsedSeconds: 0,
+                    totalElapsedSeconds: duration,
+                    stageDurations: nil
+                )
+            let summary = textAudioExecutionSummary(from: completionSnapshot, fallbackDuration: duration)
+
+            inferenceViewModel.outputAudioURL = outputURL
+            inferenceViewModel.outputMessage = result.message
+            mixedOutputURL = nil
+            isBackgroundMixEnabled = false
+            backgroundAudioURL = nil
+            cleanupBackgroundPreviewCache()
+            audioPlayer.load(url: outputURL)
+            lastExecutionSummary = summary
+            statusMessage = "Generated audio from text."
+            textAudioProgress = completionSnapshot
+            presentToast(message: statusMessage, style: .success)
+            recordTextTaskHistory(status: .success, summary: summary, outputURL: outputURL, sourceURL: result.sourceAudioURL, snapshot: completionSnapshot)
+        } catch {
+            textAudioErrorMessage = error.localizedDescription
+            statusMessage = error.localizedDescription
+            textAudioProgress = TextAudioProgressSnapshot(
+                active: false,
+                stage: .failed,
+                title: "Text task failed",
+                detail: error.localizedDescription,
+                completedSteps: textAudioProgress?.completedSteps ?? 0,
+                totalSteps: textAudioProgress?.totalSteps ?? 5,
+                modelName: selectedModelName,
+                stageElapsedSeconds: textAudioProgress?.stageElapsedSeconds,
+                totalElapsedSeconds: textAudioProgress?.totalElapsedSeconds,
+                stageDurations: textAudioProgress?.stageDurations
+            )
+            presentToast(message: error.localizedDescription, style: .error)
+            recordTextTaskHistory(status: .failure, summary: error.localizedDescription, outputURL: nil, sourceURL: nil, snapshot: textAudioProgress)
+        }
+    }
+
+    /// 把后端返回的阶段耗时压成一行摘要，方便直接落到状态与历史里。
+    private func textAudioExecutionSummary(from snapshot: TextAudioProgressSnapshot?, fallbackDuration: TimeInterval) -> String {
+        let totalDuration = snapshot?.totalElapsedSeconds ?? fallbackDuration
+        let summaryPrefix = "Text audio generated in \(totalDuration.formatted(.number.precision(.fractionLength(1))))s"
+        guard let timingSummary = textAudioTimingSummary(from: snapshot), !timingSummary.isEmpty else {
+            return summaryPrefix
+        }
+        return "\(summaryPrefix) · \(timingSummary)"
+    }
+
+    /// 统一格式化每一步耗时，避免任务历史只剩一个总时长。
+    private func textAudioTimingSummary(from snapshot: TextAudioProgressSnapshot?) -> String? {
+        guard let stageDurations = snapshot?.stageDurations, !stageDurations.isEmpty else { return nil }
+        let orderedPairs: [(TextAudioStage, String)] = [
+            (.preparing, "Prepare"),
+            (.loadingChatTTS, "Load"),
+            (.generatingSpeech, "Generate"),
+            (.convertingVoice, "Convert"),
+            (.finalizing, "Finalize"),
+        ]
+        let fragments = orderedPairs.compactMap { stage, label -> String? in
+            guard let duration = stageDurations[stage.rawValue] else { return nil }
+            return "\(label) \(duration.formatted(.number.precision(.fractionLength(1))))s"
+        }
+        return fragments.isEmpty ? nil : fragments.joined(separator: " · ")
+    }
+
+    /// 轮询后端文本任务阶段，给任务面板提供真实的多阶段反馈。
+    private func startTextAudioProgressPolling() {
+        textAudioProgressTask?.cancel()
+        textAudioProgressTask = Task { [weak self] in
+            guard let self else { return }
+            while !Task.isCancelled {
+                do {
+                    let snapshot = try await bridgeClient.fetchTextAudioProgress()
+                    if Task.isCancelled { return }
+                    self.textAudioProgress = snapshot
+                } catch {
+                    if Task.isCancelled { return }
+                }
+
+                if !self.isGeneratingTextAudio {
+                    return
+                }
+
+                try? await Task.sleep(for: .milliseconds(350))
+            }
+        }
+    }
+
     /// 预留统一存储目录并执行 UVR 分离，统一收口 vocals / instrumentals 目录。
     func runUVRConvert() async {
         let inputLabel = uvrViewModel.inputDirectoryURL?.lastPathComponent
@@ -889,6 +1258,8 @@ final class AppState: ObservableObject {
                 outputPath: status == .success ? inferenceViewModel.outputAudioURL?.path : nil,
                 indexPath: effectiveSelectedIndexPath,
                 f0Method: inferenceViewModel.f0Method.rawValue,
+                parameterSummary: nil,
+                timingSummary: nil,
                 speakerID: inferenceViewModel.speakerID,
                 errorMessage: status == .failure ? inferenceViewModel.errorMessage ?? summary : nil,
                 taskDirectoryPath: reservation?.taskDirectoryURL.path ?? inferenceViewModel.outputDirectoryURL?.path,
@@ -930,6 +1301,8 @@ final class AppState: ObservableObject {
                 outputPath: batchViewModel.outputDirectoryURL?.path,
                 indexPath: batchViewModel.effectiveIndexPath,
                 f0Method: batchViewModel.f0Method.rawValue,
+                parameterSummary: nil,
+                timingSummary: nil,
                 speakerID: batchViewModel.speakerID,
                 errorMessage: status == .failure ? batchViewModel.errorMessage ?? summary : nil,
                 taskDirectoryPath: reservation?.taskDirectoryURL.path ?? batchViewModel.outputDirectoryURL?.path,
@@ -938,6 +1311,50 @@ final class AppState: ObservableObject {
             )
         )
         pendingBatchReservation = nil
+    }
+
+    /// 记录文本生成音频任务，并将其作为独立任务类型写入 RES 历史。
+    private func recordTextTaskHistory(status: TaskHistoryStatus, summary: String, outputURL: URL?, sourceURL: URL?, snapshot: TextAudioProgressSnapshot?) {
+        let reservation = pendingTextAudioReservation
+        let parameterSummary = [
+            selectedTextAudioGender.displayName,
+            effectiveTextAudioToneLabel,
+            selectedTextAudioMatchProfile.displayName,
+            "P\(Int(textAudioTranspose.rounded()))",
+            textAudioSpeechRate.displayName,
+            textAudioF0Method.displayName,
+            "IDX \(Int(textAudioIndexRate * 100))%",
+            "PR \(textAudioProtect.formatted(.number.precision(.fractionLength(2))))",
+        ].joined(separator: " · ")
+        let textArtifacts = status == .success
+            ? artifacts(from: outputURL.map { [$0] } ?? [], role: .textOutput)
+            + artifacts(from: sourceURL.map { [$0] } ?? [], role: .textSource)
+            : []
+        appendTaskHistory(
+            TaskHistoryEntry(
+                id: reservation?.taskID ?? UUID(),
+                timestamp: Date(),
+                kind: .text,
+                status: status,
+                title: status == .failure ? "Text audio failed" : "Text audio",
+                summary: summary,
+                modelName: selectedModelName,
+                inputLabel: String(textAudioInput.prefix(48)),
+                inputPath: textAudioInput,
+                outputLabel: outputURL?.lastPathComponent,
+                outputPath: outputURL?.path,
+                indexPath: effectiveSelectedIndexPath,
+                f0Method: textAudioF0Method.rawValue,
+                parameterSummary: parameterSummary,
+                timingSummary: textAudioTimingSummary(from: snapshot),
+                speakerID: inferenceViewModel.speakerID,
+                errorMessage: status == .failure ? textAudioErrorMessage ?? summary : nil,
+                taskDirectoryPath: reservation?.taskDirectoryURL.path,
+                outputArtifacts: textArtifacts,
+                sourceTaskID: nil
+            )
+        )
+        pendingTextAudioReservation = nil
     }
 
     /// 记录 UVR 成功或失败任务，并保留 vocals/instrumentals 的配对关联。
@@ -966,6 +1383,8 @@ final class AppState: ObservableObject {
                 outputPath: primaryOutput?.path,
                 indexPath: nil,
                 f0Method: nil,
+                parameterSummary: nil,
+                timingSummary: nil,
                 speakerID: nil,
                 errorMessage: status == .failure ? uvrViewModel.errorMessage ?? summary : nil,
                 taskDirectoryPath: reservation?.taskDirectoryURL.path,
@@ -999,6 +1418,8 @@ final class AppState: ObservableObject {
                 outputPath: nil,
                 indexPath: effectiveSelectedIndexPath,
                 f0Method: inferenceViewModel.f0Method.rawValue,
+                parameterSummary: nil,
+                timingSummary: nil,
                 speakerID: inferenceViewModel.speakerID,
                 errorMessage: status == .failure ? realtimeViewModel.lastError ?? summary : nil,
                 taskDirectoryPath: nil,
@@ -1126,9 +1547,9 @@ final class AppState: ObservableObject {
         }
         if let artifact = entry.outputArtifacts.first(where: { artifact in
             switch artifact.role {
-            case .singleOutput, .uvrVocal:
+            case .singleOutput, .textOutput, .uvrVocal:
                 return true
-            case .batchOutput, .uvrInstrumental, .mixedOutput:
+            case .batchOutput, .textSource, .uvrInstrumental, .mixedOutput:
                 return false
             }
         }) {
@@ -1317,6 +1738,8 @@ final class AppState: ObservableObject {
             outputPath: entry.outputPath,
             indexPath: entry.indexPath,
             f0Method: entry.f0Method,
+            parameterSummary: entry.parameterSummary,
+            timingSummary: entry.timingSummary,
             speakerID: entry.speakerID,
             errorMessage: entry.errorMessage,
             taskDirectoryPath: entry.taskDirectoryPath,

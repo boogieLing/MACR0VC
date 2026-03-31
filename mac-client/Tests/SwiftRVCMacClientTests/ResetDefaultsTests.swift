@@ -56,6 +56,25 @@ final class ResetDefaultsTests: XCTestCase {
         XCTAssertNil(appState.inferenceViewModel.inputFileURL)
     }
 
+    /// 验证切换到文本输入模式时，会清理文件类输入并标记为文本任务。
+    func testTextAudioInputClearsFileSelectionsAndSwitchesMode() {
+        let appState = AppState(
+            environment: .fallback(),
+            bridgeClient: BusyTestBridgeClient(),
+            startMetricsTask: false
+        )
+        appState.setSingleInputFileURL(URL(fileURLWithPath: "/tmp/old.wav"))
+        appState.setBatchInputFileURLs([URL(fileURLWithPath: "/tmp/queued.wav")])
+
+        appState.setTextAudioInput("Hello from text audio")
+
+        XCTAssertEqual(appState.primaryInputMode, .text)
+        XCTAssertEqual(appState.textAudioInput, "Hello from text audio")
+        XCTAssertNil(appState.inferenceViewModel.inputFileURL)
+        XCTAssertTrue(appState.batchViewModel.inputFileURLs.isEmpty)
+        XCTAssertNil(appState.batchViewModel.inputDirectoryURL)
+    }
+
     /// 验证单文件推理视图模型可以将 patch 与参数区回退到默认值。
     func testInferenceViewModelResetMethodsRestoreDefaults() {
         let viewModel = InferenceViewModel(bridgeClient: BusyTestBridgeClient(), audioPlayer: AudioPreviewPlayer())

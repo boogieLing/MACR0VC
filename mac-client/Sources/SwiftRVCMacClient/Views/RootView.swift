@@ -31,6 +31,8 @@ struct RootView: View {
     @State private var isCheckpointToolsPresented = false
     @State private var isQueuePresented = false
     @State private var isHistoryPresented = false
+    @State private var isInputSourcePresented = false
+    @State private var textAudioDraft = ""
     @State private var pendingDestructiveAction: PendingDestructiveAction?
     @StateObject private var helpTooltipCoordinator = HelpTooltipCoordinator()
 
@@ -157,22 +159,33 @@ struct RootView: View {
         }
         .sheet(isPresented: $isQueuePresented) {
             QueueInspectorSheet(
+                inputMode: appState.primaryInputMode,
                 selectedModelName: appState.selectedModelName,
                 effectiveIndexPath: appState.effectiveSelectedIndexPath,
                 f0Method: appState.inferenceViewModel.f0Method.rawValue,
                 speakerID: appState.inferenceViewModel.speakerID,
                 singleInputURL: appState.inferenceViewModel.inputFileURL,
+                textInput: appState.textAudioInput,
+                textGender: appState.selectedTextAudioGender,
+                textToneLabel: appState.effectiveTextAudioToneLabel,
+                textToneMode: appState.selectedTextAudioToneMode,
+                textMatchProfile: appState.selectedTextAudioMatchProfile,
+                textParameterBundle: appState.effectiveTextAudioParameterBundle,
                 batchInputDirectoryURL: appState.batchViewModel.inputDirectoryURL,
                 batchInputFileURLs: appState.batchViewModel.inputFileURLs,
                 outputDirectoryURL: appState.batchViewModel.outputDirectoryURL,
                 outputAudioURL: appState.inferenceViewModel.outputAudioURL,
                 runStartedAt: appState.inferenceViewModel.runStartedAt,
+                textRunStartedAt: appState.textAudioRunStartedAt,
+                textAudioProgress: appState.textAudioProgress,
                 statusMessage: appState.statusMessage,
                 lastExecutionSummary: appState.lastExecutionSummary,
                 inferenceError: appState.inferenceViewModel.errorMessage,
+                textError: appState.textAudioErrorMessage,
                 batchError: appState.batchViewModel.errorMessage,
                 realtimeError: appState.realtimeViewModel.lastError,
                 isSingleRunning: appState.inferenceViewModel.isRunning,
+                isTextRunning: appState.isGeneratingTextAudio,
                 isBatchRunning: appState.batchViewModel.isRunning,
                 isRealtimeRunning: appState.realtimeViewModel.isRunning
             )
@@ -185,6 +198,54 @@ struct RootView: View {
                 onLoadOutput: appState.loadTaskHistoryOutput(_:),
                 onPlayOutput: appState.playTaskHistoryOutput(_:),
                 onRevealOutput: appState.revealTaskHistoryOutput(_:)
+            )
+        }
+        .sheet(isPresented: $isInputSourcePresented) {
+            InputSourceSheet(
+                mode: appState.primaryInputMode,
+                text: $textAudioDraft,
+                selectedTextAudioGender: Binding(
+                    get: { appState.selectedTextAudioGender },
+                    set: { appState.setTextAudioGender($0) }
+                ),
+                selectedTextAudioToneMode: Binding(
+                    get: { appState.selectedTextAudioToneMode },
+                    set: { appState.setTextAudioToneMode($0) }
+                ),
+                selectedTextAudioTonePreset: Binding(
+                    get: { appState.effectiveTextAudioTonePreset },
+                    set: { appState.setTextAudioTonePreset($0) }
+                ),
+                customTextAudioTone: $appState.customTextAudioTone,
+                selectedTextAudioMatchProfile: Binding(
+                    get: { appState.selectedTextAudioMatchProfile },
+                    set: { appState.setTextAudioMatchProfile($0) }
+                ),
+                availableTonePresets: appState.availableTextAudioTonePresets,
+                speakerCount: max(appState.selectedSpeakerCount, 1),
+                speakerID: Binding(
+                    get: { appState.inferenceViewModel.speakerID },
+                    set: {
+                        appState.inferenceViewModel.speakerID = $0
+                        appState.batchViewModel.speakerID = $0
+                    }
+                ),
+                textAudioTranspose: $appState.textAudioTranspose,
+                textAudioSpeechRate: $appState.textAudioSpeechRate,
+                textAudioF0Method: $appState.textAudioF0Method,
+                textAudioIndexRate: $appState.textAudioIndexRate,
+                textAudioFilterRadius: $appState.textAudioFilterRadius,
+                textAudioRmsMixRate: $appState.textAudioRmsMixRate,
+                textAudioProtect: $appState.textAudioProtect,
+                effectiveIndexPath: appState.effectiveSelectedIndexPath,
+                singleInputURL: appState.inferenceViewModel.inputFileURL,
+                batchInputFileURLs: appState.batchViewModel.inputFileURLs,
+                onChooseAudioFile: chooseAudioFile,
+                onChooseAudioFiles: chooseBatchInputFiles,
+                onApplyRecommendedTextSettings: appState.applyTextAudioDefaultsFromSelection,
+                onUseText: {
+                    appState.setTextAudioInput(textAudioDraft)
+                }
             )
         }
         .animation(.spring(response: 0.28, dampingFraction: 0.9), value: appState.toast?.id)
@@ -265,6 +326,9 @@ struct RootView: View {
                 batchViewModel: appState.batchViewModel,
                 realtimeViewModel: appState.realtimeViewModel,
                 audioPlayer: appState.audioPlayer,
+                primaryInputMode: appState.primaryInputMode,
+                textAudioInput: appState.textAudioInput,
+                isGeneratingTextAudio: appState.isGeneratingTextAudio,
                 models: appState.models,
                 indexPaths: appState.indexPaths,
                 selectedModelName: appState.selectedModelName,
@@ -302,6 +366,9 @@ struct RootView: View {
                 batchViewModel: appState.batchViewModel,
                 realtimeViewModel: appState.realtimeViewModel,
                 audioPlayer: appState.audioPlayer,
+                primaryInputMode: appState.primaryInputMode,
+                textAudioInput: appState.textAudioInput,
+                isGeneratingTextAudio: appState.isGeneratingTextAudio,
                 models: appState.models,
                 indexPaths: appState.indexPaths,
                 selectedModelName: appState.selectedModelName,
@@ -427,6 +494,8 @@ struct RootView: View {
             appState.stopEngine()
         case .refreshModels:
             Task { await appState.refreshModels() }
+        case .refreshEngineConnection:
+            Task { await appState.refreshEngineConnection() }
         case .refreshRealtimeDevices:
             Task { await appState.refreshRealtimeContext() }
         case .openWeights:
@@ -449,6 +518,9 @@ struct RootView: View {
             isQueuePresented = true
         case .showHistory:
             isHistoryPresented = true
+        case .showTextAudioComposer:
+            textAudioDraft = appState.textAudioInput
+            isInputSourcePresented = true
         case .releaseRuntimeCaches:
             Task { await appState.releaseRuntimeCaches() }
         case .chooseAudio:
@@ -463,7 +535,16 @@ struct RootView: View {
             pendingDestructiveAction = .clearF0Curve
         case .convertSingle:
             isQueuePresented = true
-            Task { await appState.runSingleConvert() }
+            if appState.primaryInputMode == .text {
+                if appState.textAudioInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    textAudioDraft = appState.textAudioInput
+                    isInputSourcePresented = true
+                } else {
+                    Task { await appState.runTextAudioGenerate() }
+                }
+            } else {
+                Task { await appState.runSingleConvert() }
+            }
         case .playPreview:
             appState.audioPlayer.play()
         case .revealOutput:
@@ -735,6 +816,7 @@ private enum ConsoleContextAction: String, Identifiable {
     case restartEngine
     case stopEngine
     case refreshModels
+    case refreshEngineConnection
     case refreshRealtimeDevices
     case openWeights
     case openIndices
@@ -745,6 +827,7 @@ private enum ConsoleContextAction: String, Identifiable {
     case showFAQ
     case showQueue
     case showHistory
+    case showTextAudioComposer
     case chooseAudio
     case chooseCustomIndexFile
     case clearCustomIndexFile
@@ -798,6 +881,32 @@ private struct ConsoleActionItem: Identifiable {
     let action: ConsoleContextAction
     let isEnabled: Bool
     let accent: Color?
+    let submenuItems: [ConsoleActionSubmenuItem]
+
+    init(
+        id: String,
+        title: String,
+        systemImage: String,
+        action: ConsoleContextAction,
+        isEnabled: Bool,
+        accent: Color?,
+        submenuItems: [ConsoleActionSubmenuItem] = []
+    ) {
+        self.id = id
+        self.title = title
+        self.systemImage = systemImage
+        self.action = action
+        self.isEnabled = isEnabled
+        self.accent = accent
+        self.submenuItems = submenuItems
+    }
+}
+
+private struct ConsoleActionSubmenuItem: Identifiable {
+    let id: String
+    let title: String
+    let subtitle: String?
+    let action: ConsoleContextAction
 }
 
 private struct ConsolePickerOption: Identifiable {
@@ -840,6 +949,9 @@ private struct ConsoleLeftRail: View {
     @ObservedObject var batchViewModel: BatchViewModel
     @ObservedObject var realtimeViewModel: RealtimeViewModel
     @ObservedObject var audioPlayer: AudioPreviewPlayer
+    let primaryInputMode: PrimaryInputMode
+    let textAudioInput: String
+    let isGeneratingTextAudio: Bool
     let models: [ModelOption]
     let indexPaths: [String]
     let selectedModelName: String?
@@ -918,10 +1030,12 @@ private struct ConsoleLeftRail: View {
                     actionLabel: "SELECT",
                     accent: selectedModelName == nil ? nil : AppTheme.knobOrange,
                     options: models.map {
-                        ConsolePickerOption(
+                        let trimmedSummary = $0.infoSummary.trimmingCharacters(in: .whitespacesAndNewlines)
+                        let genericSummary = trimmedSummary.caseInsensitiveCompare("Ready to load this voice model.") == .orderedSame
+                        return ConsolePickerOption(
                             id: $0.name,
                             title: $0.name.replacingOccurrences(of: ".pth", with: ""),
-                            subtitle: $0.infoSummary.isEmpty ? nil : $0.infoSummary
+                            subtitle: trimmedSummary.isEmpty || genericSummary ? nil : trimmedSummary
                         )
                     },
                     selectedID: selectedModelName,
@@ -995,6 +1109,17 @@ private struct ConsoleLeftRail: View {
 
     private var isModelPickerDisabled: Bool {
         isBootstrapBusy || isCatalogBusy || isModelSelectionBusy
+    }
+
+    /// 根据当前输入模式判断 GO 是否可执行，文本模式同样必须依赖引擎和目标模型。
+    private var goActionEnabled: Bool {
+        if primaryInputMode == .text {
+            return engineController.state == .ready
+                && selectedModelName != nil
+                && !isGeneratingTextAudio
+                && !textAudioInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+        return engineController.state == .ready && !inferenceViewModel.isRunning
     }
 
     /// 渲染左侧实时参数机架。
@@ -1195,11 +1320,18 @@ private struct ConsoleLeftRail: View {
             ConsoleActionItem(id: "pth", title: "PTH", systemImage: "folder", action: .openWeights, isEnabled: true, accent: nil),
             ConsoleActionItem(id: "idx", title: "IDX", systemImage: "folder.badge.gearshape", action: .openIndices, isEnabled: true, accent: nil),
             ConsoleActionItem(id: "dir", title: "DIR", systemImage: "folder.fill", action: .chooseBatchInputFolder, isEnabled: true, accent: nil),
-            ConsoleActionItem(id: "files", title: "FILES", systemImage: "music.note.list", action: .chooseBatchInputFiles, isEnabled: true, accent: nil),
+            ConsoleActionItem(
+                id: "in",
+                title: "IN",
+                systemImage: "tray.and.arrow.down",
+                action: .showTextAudioComposer,
+                isEnabled: true,
+                accent: nil
+            ),
             ConsoleActionItem(id: "task", title: "TASK", systemImage: "list.bullet.rectangle.portrait", action: .showQueue, isEnabled: true, accent: AppTheme.knobBlue),
             ConsoleActionItem(id: "res", title: "RES", systemImage: "clock.arrow.circlepath", action: .showHistory, isEnabled: true, accent: AppTheme.knobGrey),
             ConsoleActionItem(id: "out", title: "OUT", systemImage: "folder.badge.plus", action: .chooseBatchOutputFolder, isEnabled: true, accent: nil),
-            ConsoleActionItem(id: "single", title: "GO", systemImage: "record.circle", action: .convertSingle, isEnabled: engineController.state == .ready && !inferenceViewModel.isRunning, accent: AppTheme.knobOrange),
+            ConsoleActionItem(id: "single", title: "GO", systemImage: "record.circle", action: .convertSingle, isEnabled: goActionEnabled, accent: AppTheme.knobOrange),
             ConsoleActionItem(id: "play", title: "PLAY", systemImage: "play.fill", action: .playPreview, isEnabled: inferenceViewModel.outputAudioURL != nil, accent: AppTheme.knobOrange),
             ConsoleActionItem(id: "open", title: "OPEN", systemImage: "folder.badge.waveform", action: .revealOutput, isEnabled: inferenceViewModel.outputAudioURL != nil, accent: nil),
         ]
@@ -1227,6 +1359,9 @@ private struct ConsoleDeck: View {
     @ObservedObject var batchViewModel: BatchViewModel
     @ObservedObject var realtimeViewModel: RealtimeViewModel
     @ObservedObject var audioPlayer: AudioPreviewPlayer
+    let primaryInputMode: PrimaryInputMode
+    let textAudioInput: String
+    let isGeneratingTextAudio: Bool
     let models: [ModelOption]
     let indexPaths: [String]
     let selectedModelName: String?
@@ -1388,6 +1523,7 @@ private struct ConsoleDeck: View {
     private var topActionItems: [ConsoleActionItem] {
         [
             ConsoleActionItem(id: "boot", title: "BOOT", systemImage: "bolt.fill", action: .startEngine, isEnabled: engineController.state != .ready && engineController.state != .starting && !isTopTransportBusy, accent: AppTheme.knobBlue),
+            ConsoleActionItem(id: "link", title: "LINK", systemImage: "link", action: .refreshEngineConnection, isEnabled: !isTopTransportBusy, accent: AppTheme.knobGrey),
             ConsoleActionItem(id: "sync", title: "SYNC", systemImage: "arrow.clockwise", action: .refreshModels, isEnabled: engineController.state == .ready && !isTopTransportBusy, accent: AppTheme.knobOchre),
             ConsoleActionItem(id: "uvr", title: "UVR", systemImage: "waveform.badge.magnifyingglass", action: .showUVR, isEnabled: engineController.state == .ready, accent: AppTheme.knobOrange),
             ConsoleActionItem(id: "onnx", title: "ONNX", systemImage: "point.3.connected.trianglepath.dotted", action: .showONNX, isEnabled: engineController.state == .ready, accent: AppTheme.knobBlue),
@@ -1405,6 +1541,15 @@ private struct ConsoleDeck: View {
 
     private var realtimeMissingRoute: Bool {
         realtimeViewModel.selectedInputDevice == nil || realtimeViewModel.selectedOutputDevice == nil
+    }
+
+    /// 根据当前输入模式判断 GO 是否可执行，文本模式不依赖引擎或模型。
+    private var goActionEnabled: Bool {
+        if primaryInputMode == .text {
+            return !isGeneratingTextAudio
+                && !textAudioInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+        return engineController.state == .ready && !inferenceViewModel.isRunning
     }
 
     private var divider: some View {
@@ -1616,6 +1761,7 @@ private struct ConsoleDeck: View {
             ("MODEL", selectedModelSizeLabel, selectedModelName == nil ? nil : AppTheme.knobOrange),
             ("APP", appMemoryLabel, AppTheme.knobBlue),
             ("ENGINE", engineMemoryLabel, engineController.state == .ready ? AppTheme.ledGreen : nil),
+            ("BACKEND", engineController.backendVersionLabel, engineController.state == .ready ? AppTheme.knobGrey : nil),
             ("DELAY", "\(realtimeViewModel.delayTimeMs) MS", realtimeViewModel.isRunning ? AppTheme.knobOrange : nil),
             ("INFER", "\(realtimeViewModel.inferTimeMs) MS", realtimeViewModel.isRunning ? AppTheme.knobBlue : nil),
             ("PORT", engineController.port.map(String.init) ?? "—", nil),
@@ -1658,11 +1804,18 @@ private struct ConsoleDeck: View {
             ConsoleActionItem(id: "pth", title: "PTH", systemImage: "folder", action: .openWeights, isEnabled: true, accent: nil),
             ConsoleActionItem(id: "idx", title: "IDX", systemImage: "folder.badge.gearshape", action: .openIndices, isEnabled: true, accent: nil),
             ConsoleActionItem(id: "dir", title: "DIR", systemImage: "folder.fill", action: .chooseBatchInputFolder, isEnabled: true, accent: nil),
-            ConsoleActionItem(id: "files", title: "FILES", systemImage: "music.note.list", action: .chooseBatchInputFiles, isEnabled: true, accent: nil),
+            ConsoleActionItem(
+                id: "in",
+                title: "IN",
+                systemImage: "tray.and.arrow.down",
+                action: .showTextAudioComposer,
+                isEnabled: true,
+                accent: nil
+            ),
             ConsoleActionItem(id: "task", title: "TASK", systemImage: "list.bullet.rectangle.portrait", action: .showQueue, isEnabled: true, accent: AppTheme.knobBlue),
             ConsoleActionItem(id: "res", title: "RES", systemImage: "clock.arrow.circlepath", action: .showHistory, isEnabled: true, accent: AppTheme.knobGrey),
             ConsoleActionItem(id: "out", title: "OUT", systemImage: "folder.badge.plus", action: .chooseBatchOutputFolder, isEnabled: true, accent: nil),
-            ConsoleActionItem(id: "single", title: "GO", systemImage: "record.circle", action: .convertSingle, isEnabled: engineController.state == .ready && !inferenceViewModel.isRunning, accent: AppTheme.knobOrange),
+            ConsoleActionItem(id: "single", title: "GO", systemImage: "record.circle", action: .convertSingle, isEnabled: goActionEnabled, accent: AppTheme.knobOrange),
             ConsoleActionItem(id: "play", title: "PLAY", systemImage: "play.fill", action: .playPreview, isEnabled: inferenceViewModel.outputAudioURL != nil, accent: AppTheme.knobOrange),
             ConsoleActionItem(id: "open", title: "OPEN", systemImage: "folder.badge.waveform", action: .revealOutput, isEnabled: inferenceViewModel.outputAudioURL != nil, accent: nil),
             ConsoleActionItem(id: "unld", title: "UNLD", systemImage: "eject.fill", action: .unloadModel, isEnabled: selectedModelName != nil && !isModelSelectionBusy, accent: AppTheme.knobGrey),
@@ -1733,9 +1886,44 @@ private struct ConsoleDeck: View {
     /// 渲染单个底部上下文动作按钮。
     @ViewBuilder
     private func contextActionButton(_ item: ConsoleActionItem, buttonSize: CGFloat, tight: Bool) -> some View {
-        Button {
-            onContextAction(item.action)
-        } label: {
+        if item.submenuItems.isEmpty {
+            Button {
+                onContextAction(item.action)
+            } label: {
+                contextActionButtonLabel(item, buttonSize: buttonSize, tight: tight)
+            }
+            .buttonStyle(ConsoleRoundButtonStyle(accent: item.accent))
+            .disabled(!item.isEnabled)
+            .opacity(item.isEnabled ? 1 : 0.48)
+        } else {
+            Menu {
+                ForEach(item.submenuItems) { submenuItem in
+                    Button {
+                        onContextAction(submenuItem.action)
+                    } label: {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(submenuItem.title)
+                            if let subtitle = submenuItem.subtitle {
+                                Text(subtitle)
+                                    .font(.system(size: 10, weight: .medium, design: .rounded))
+                                    .foregroundStyle(Color.secondary)
+                            }
+                        }
+                    }
+                }
+            } label: {
+                contextActionButtonLabel(item, buttonSize: buttonSize, tight: tight)
+            }
+            .menuStyle(.borderlessButton)
+            .buttonStyle(ConsoleRoundButtonStyle(accent: item.accent))
+            .disabled(!item.isEnabled)
+            .opacity(item.isEnabled ? 1 : 0.48)
+        }
+    }
+
+    /// 统一渲染底部圆形动作按钮标签，供普通按钮和菜单复用。
+    private func contextActionButtonLabel(_ item: ConsoleActionItem, buttonSize: CGFloat, tight: Bool) -> some View {
+        Group {
             if item.title.count <= 3 {
                 VStack(spacing: tight ? 2 : 3) {
                     Image(systemName: item.systemImage)
@@ -1750,9 +1938,6 @@ private struct ConsoleDeck: View {
                     .frame(width: buttonSize, height: buttonSize)
             }
         }
-        .buttonStyle(ConsoleRoundButtonStyle(accent: item.accent))
-        .disabled(!item.isEnabled)
-        .opacity(item.isEnabled ? 1 : 0.48)
     }
 
     /// 渲染多通道推子列。
@@ -3480,31 +3665,19 @@ private struct ConsolePatchOptionTile: View {
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 10) {
+            HStack(spacing: 8) {
                 availabilityBadge
 
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(title.uppercased())
-                        .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                        .foregroundStyle(Color.black.opacity(0.78))
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.88)
-
-                    if let subtitle, !subtitle.isEmpty {
-                        Text(subtitle)
-                            .font(.system(size: 9, weight: .medium, design: .rounded))
-                            .foregroundStyle(AppTheme.labelInk.opacity(0.72))
-                            .lineLimit(1)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                }
-
-                Spacer(minLength: 0)
+                Text(title.uppercased())
+                    .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(Color.black.opacity(0.78))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.86)
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .frame(maxWidth: .infinity, minHeight: 58, alignment: .leading)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .frame(maxWidth: .infinity, minHeight: 38, alignment: .leading)
             .background(
                 RoundedRectangle(cornerRadius: 12, style: .continuous)
                     .fill(backgroundFill)
@@ -3528,7 +3701,7 @@ private struct ConsolePatchOptionTile: View {
         ZStack {
             Circle()
                 .fill(isSelected ? accent.opacity(0.16) : Color(hex: isHovered ? 0xF0F1F4 : 0xF7F7F8))
-                .frame(width: 20, height: 20)
+                .frame(width: 16, height: 16)
                 .overlay(
                     Circle()
                         .strokeBorder(Color.black.opacity(isSelected ? 0.10 : (isHovered ? 0.08 : 0.05)), lineWidth: 1)
@@ -3536,7 +3709,7 @@ private struct ConsolePatchOptionTile: View {
 
             Circle()
                 .fill(isSelected ? accent.opacity(0.96) : Color(hex: 0xB6BAC3))
-                .frame(width: 7, height: 7)
+                .frame(width: 5, height: 5)
                 .shadow(color: (isSelected ? accent : Color.white).opacity(isSelected ? 0.52 : 0.20), radius: 4)
         }
     }
@@ -4062,6 +4235,7 @@ private struct HelpCenterSheet: View {
         )
     }
 
+    // helpSection TODO: 补充方法注释。
     private func helpSection(title: String, rows: [(String, String)]) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             Text(title)
@@ -4094,6 +4268,7 @@ private struct HelpCenterSheet: View {
         }
     }
 
+    // helpChip TODO: 补充方法注释。
     private func helpChip(_ text: String) -> some View {
         Text(text)
             .font(.system(size: 10, weight: .bold, design: .monospaced))
@@ -4150,10 +4325,145 @@ private struct QueueRuntimeProgressCard: View {
         )
     }
 
+    // elapsedString TODO: 补充方法注释。
     private func elapsedString(now: Date) -> String {
         guard let startedAt else { return "0.0S" }
         let elapsed = max(now.timeIntervalSince(startedAt), 0)
         return "\(elapsed.formatted(.number.precision(.fractionLength(1))))S"
+    }
+}
+
+private struct QueueTextStageProgressCard: View {
+    let snapshot: TextAudioProgressSnapshot
+    let startedAt: Date?
+
+    private let orderedStages: [TextAudioStage] = [
+        .preparing,
+        .loadingChatTTS,
+        .generatingSpeech,
+        .convertingVoice,
+        .finalizing,
+    ]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("TEXT STAGES")
+                .font(.system(size: 11, weight: .bold, design: .monospaced))
+                .foregroundStyle(AppTheme.labelInk)
+
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 8) {
+                    ForEach(Array(orderedStages.enumerated()), id: \.offset) { index, stage in
+                        VStack(spacing: 6) {
+                            Capsule(style: .continuous)
+                                .fill(stageFill(for: stage, index: index))
+                                .frame(height: 7)
+                                .overlay(
+                                    Capsule(style: .continuous)
+                                        .strokeBorder(Color.black.opacity(0.08), lineWidth: 0.5)
+                                )
+                            Text(stage.displayTitle.uppercased())
+                                .font(.system(size: 8, weight: .bold, design: .monospaced))
+                                .foregroundStyle(stageLabelColor(for: stage, index: index))
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.75)
+                            Text(stageDurationLabel(for: stage))
+                                .font(.system(size: 7, weight: .medium, design: .monospaced))
+                                .foregroundStyle(AppTheme.labelInk.opacity(0.56))
+                                .lineLimit(1)
+                        }
+                        .frame(maxWidth: .infinity)
+                    }
+                }
+
+                HStack(alignment: .firstTextBaseline) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(snapshot.title.uppercased())
+                            .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                            .foregroundStyle(AppTheme.valueInk)
+                        Text(snapshot.detail)
+                            .font(.system(size: 10, weight: .medium, design: .rounded))
+                            .foregroundStyle(AppTheme.labelInk.opacity(0.76))
+                    }
+                    Spacer()
+                    VStack(alignment: .trailing, spacing: 3) {
+                        Text("STAGE \(currentStageElapsedLabel)")
+                            .font(.system(size: 10, weight: .medium, design: .monospaced))
+                            .foregroundStyle(AppTheme.labelInk.opacity(0.68))
+                        Text("TOTAL \(totalElapsedLabel)")
+                            .font(.system(size: 10, weight: .medium, design: .monospaced))
+                            .foregroundStyle(AppTheme.labelInk.opacity(0.68))
+                    }
+                }
+            }
+        }
+        .padding(14)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(Color.white.opacity(0.56))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .strokeBorder(Color.black.opacity(0.06), lineWidth: 1)
+                )
+        )
+    }
+
+    // stageFill TODO: 补充方法注释。
+    private func stageFill(for stage: TextAudioStage, index: Int) -> Color {
+        let completed = snapshot.completedSteps > index
+        if completed {
+            return AppTheme.knobOrange.opacity(stage == snapshot.stage && snapshot.active ? 0.94 : 0.78)
+        }
+        if snapshot.stage == stage && snapshot.active {
+            return AppTheme.knobBlue.opacity(0.88)
+        }
+        return Color.black.opacity(0.12)
+    }
+
+    // stageLabelColor TODO: 补充方法注释。
+    private func stageLabelColor(for stage: TextAudioStage, index: Int) -> Color {
+        if snapshot.stage == stage && snapshot.active {
+            return AppTheme.knobBlue.opacity(0.92)
+        }
+        if snapshot.completedSteps > index {
+            return AppTheme.knobOrange.opacity(0.9)
+        }
+        return AppTheme.labelInk.opacity(0.56)
+    }
+
+    // stageDurationLabel TODO: 补充方法注释。
+    private func stageDurationLabel(for stage: TextAudioStage) -> String {
+        if snapshot.stage == stage, let elapsed = snapshot.stageElapsedSeconds {
+            return durationLabel(elapsed)
+        }
+        if let stored = snapshot.stageDurations?[stage.rawValue] {
+            return durationLabel(stored)
+        }
+        return "—"
+    }
+
+    private var currentStageElapsedLabel: String {
+        if let elapsed = snapshot.stageElapsedSeconds {
+            return durationLabel(elapsed)
+        }
+        return durationLabel(elapsedSinceStart)
+    }
+
+    private var totalElapsedLabel: String {
+        if let elapsed = snapshot.totalElapsedSeconds {
+            return durationLabel(elapsed)
+        }
+        return durationLabel(elapsedSinceStart)
+    }
+
+    private var elapsedSinceStart: TimeInterval {
+        guard let startedAt else { return 0 }
+        return max(Date().timeIntervalSince(startedAt), 0)
+    }
+
+    // durationLabel TODO: 补充方法注释。
+    private func durationLabel(_ value: TimeInterval) -> String {
+        "\(value.formatted(.number.precision(.fractionLength(1))))S"
     }
 }
 
@@ -4317,6 +4627,7 @@ private struct ConsolePreviewWaveformPanel: View {
         }
     }
 
+    // barColor TODO: 补充方法注释。
     private func barColor(for index: Int) -> Color {
         guard !audioPlayer.waveformSamples.isEmpty else { return AppTheme.knobOrange }
         let playedCount = Int((Double(audioPlayer.waveformSamples.count) * audioPlayer.playbackProgress).rounded(.down))
@@ -4361,6 +4672,7 @@ private struct ConsolePreviewWaveformPanel: View {
         isPersistingBackgroundMix ? AppTheme.knobOrange : Color.white.opacity(0.76)
     }
 
+    // timeLabel TODO: 补充方法注释。
     private func timeLabel(_ value: TimeInterval) -> String {
         guard value.isFinite else { return "0:00" }
         let seconds = Int(value.rounded(.down))
@@ -4370,29 +4682,557 @@ private struct ConsolePreviewWaveformPanel: View {
     }
 }
 
+private struct TextAudioComposerSheet: View {
+    @Binding var text: String
+    let onGenerate: () -> Void
+
+    @Environment(\.dismiss) private var dismiss
+
+    private var trimmedText: String {
+        text.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("TEXT INPUT")
+                        .font(.system(size: 18, weight: .bold, design: .monospaced))
+                        .foregroundStyle(AppTheme.labelInk)
+                    Text("Write a prompt, then use GO to synthesize audio.")
+                        .font(.system(size: 11, weight: .medium, design: .rounded))
+                        .foregroundStyle(AppTheme.labelInk.opacity(0.76))
+                }
+
+                Spacer()
+
+                Button("Close") {
+                    dismiss()
+                }
+                .buttonStyle(SheetHeaderActionButtonStyle())
+                .keyboardShortcut(.cancelAction)
+            }
+
+            TextEditor(text: $text)
+                .font(.system(size: 13, weight: .medium, design: .rounded))
+                .padding(10)
+                .background(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .fill(Color.white.opacity(0.28))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                .strokeBorder(Color.black.opacity(0.08), lineWidth: 1)
+                        )
+                )
+
+            HStack {
+                Text("\(trimmedText.count) chars")
+                    .font(.system(size: 10, weight: .medium, design: .monospaced))
+                    .foregroundStyle(AppTheme.labelInk.opacity(0.72))
+                Spacer()
+                Button("Use Text") {
+                    onGenerate()
+                    dismiss()
+                }
+                .buttonStyle(SheetHeaderActionButtonStyle())
+                .disabled(trimmedText.isEmpty)
+            }
+        }
+        .padding(20)
+        .frame(minWidth: 520, minHeight: 320)
+        .background(AppTheme.consoleShellGradient)
+    }
+}
+
+private struct InputSourceSheet: View {
+    let mode: PrimaryInputMode
+    @Binding var text: String
+    @Binding var selectedTextAudioGender: TextAudioGenderID
+    @Binding var selectedTextAudioToneMode: TextAudioToneMode
+    @Binding var selectedTextAudioTonePreset: TextAudioTonePresetID
+    @Binding var customTextAudioTone: String
+    @Binding var selectedTextAudioMatchProfile: TextAudioMatchProfileID
+    let availableTonePresets: [TextAudioTonePresetID]
+    let speakerCount: Int
+    @Binding var speakerID: Int
+    @Binding var textAudioTranspose: Double
+    @Binding var textAudioSpeechRate: TextAudioSpeechRateID
+    @Binding var textAudioF0Method: F0Method
+    @Binding var textAudioIndexRate: Double
+    @Binding var textAudioFilterRadius: Double
+    @Binding var textAudioRmsMixRate: Double
+    @Binding var textAudioProtect: Double
+    let effectiveIndexPath: String?
+    let singleInputURL: URL?
+    let batchInputFileURLs: [URL]
+    let onChooseAudioFile: () -> Void
+    let onChooseAudioFiles: () -> Void
+    let onApplyRecommendedTextSettings: () -> Void
+    let onUseText: () -> Void
+
+    @Environment(\.dismiss) private var dismiss
+
+    private var trimmedText: String {
+        text.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var availableMatchProfiles: [TextAudioMatchProfileID] {
+        if selectedTextAudioToneMode == .custom {
+            return TextAudioMatchProfileID.allCases
+        }
+        return TextAudioMatchProfileID.allCases.filter { $0 != .customToneLock }
+    }
+
+    private var speakerOptions: [Int] {
+        Array(0..<max(speakerCount, 1))
+    }
+
+    private var toneReadout: String {
+        if selectedTextAudioToneMode == .custom {
+            let trimmedTone = customTextAudioTone.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmedTone.isEmpty ? "Custom tone" : trimmedTone
+        }
+        return selectedTextAudioTonePreset.displayName
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("INPUT CENTER")
+                        .font(.system(size: 18, weight: .bold, design: .monospaced))
+                        .foregroundStyle(AppTheme.labelInk)
+                    Text("Choose an audio source or type a text prompt for voice generation.")
+                        .font(.system(size: 11, weight: .medium, design: .rounded))
+                        .foregroundStyle(AppTheme.labelInk.opacity(0.76))
+                }
+
+                Spacer()
+
+                Button("Close") {
+                    dismiss()
+                }
+                .buttonStyle(SheetHeaderActionButtonStyle())
+                .keyboardShortcut(.cancelAction)
+            }
+
+            HStack(alignment: .top, spacing: 16) {
+                sourceCard(
+                    eyebrow: "AUDIO INPUT",
+                    title: "Load source audio",
+                    subtitle: "Use the original voice-conversion flow with one audio file or a queued file set.",
+                    isSelected: mode == .file,
+                    body: AnyView(audioInputBody)
+                )
+
+                sourceCard(
+                    eyebrow: "TEXT INPUT",
+                    title: "Write text to speak",
+                    subtitle: "Generate expressive source speech first, then convert it into the selected target voice.",
+                    isSelected: mode == .text,
+                    body: AnyView(textInputBody)
+                )
+            }
+        }
+        .padding(22)
+        .frame(minWidth: 1120, idealWidth: 1260, minHeight: 620, idealHeight: 720)
+        .background(AppTheme.consoleShellGradient)
+    }
+
+    // sourceCard TODO: 补充方法注释。
+    private func sourceCard(eyebrow: String, title: String, subtitle: String, isSelected: Bool, body: AnyView) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 5) {
+                HStack(spacing: 8) {
+                    Text(eyebrow)
+                        .font(.system(size: 10, weight: .bold, design: .monospaced))
+                        .foregroundStyle(AppTheme.labelInk.opacity(0.68))
+                    Circle()
+                        .fill(isSelected ? AppTheme.knobOrange : Color.black.opacity(0.16))
+                        .frame(width: 7, height: 7)
+                        .shadow(color: isSelected ? AppTheme.knobOrange.opacity(0.45) : .clear, radius: 4)
+                }
+                Text(title)
+                    .font(.system(size: 17, weight: .semibold, design: .rounded))
+                    .foregroundStyle(AppTheme.valueInk)
+                Text(subtitle)
+                    .font(.system(size: 11, weight: .medium, design: .rounded))
+                    .foregroundStyle(AppTheme.labelInk.opacity(0.74))
+            }
+
+            ScrollView(.vertical, showsIndicators: true) {
+                body
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
+                    .padding(.trailing, 4)
+            }
+        }
+        .padding(18)
+        .frame(maxWidth: .infinity, minHeight: 460, maxHeight: .infinity, alignment: .topLeading)
+        .background(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(Color.white.opacity(isSelected ? 0.34 : 0.24))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .strokeBorder((isSelected ? AppTheme.knobOrange : Color.black).opacity(isSelected ? 0.18 : 0.07), lineWidth: 1)
+                )
+        )
+    }
+
+    private var audioInputBody: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 10) {
+                Button("Choose one file") {
+                    dismiss()
+                    onChooseAudioFile()
+                }
+                .buttonStyle(SheetHeaderActionButtonStyle())
+
+                Button("Choose one or more files") {
+                    dismiss()
+                    onChooseAudioFiles()
+                }
+                .buttonStyle(SheetHeaderActionButtonStyle())
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                inputReadoutRow(label: "MODE", value: "Audio file")
+                inputReadoutRow(label: "SINGLE", value: singleInputURL?.lastPathComponent ?? "None selected")
+                inputReadoutRow(label: "QUEUE", value: batchInputFileURLs.isEmpty ? "No queued files" : "\(batchInputFileURLs.count) file(s) loaded")
+            }
+        }
+    }
+
+    private var textInputBody: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("1. GENDER")
+                    .font(.system(size: 10, weight: .bold, design: .monospaced))
+                    .foregroundStyle(AppTheme.labelInk.opacity(0.72))
+                HStack(spacing: 10) {
+                    ForEach(TextAudioGenderID.allCases) { gender in
+                        textOptionTile(
+                            title: gender.displayName,
+                            subtitle: gender.shortDescription,
+                            badge: nil,
+                            isSelected: selectedTextAudioGender == gender,
+                            accent: AppTheme.knobOrange
+                        ) {
+                            selectedTextAudioGender = gender
+                        }
+                    }
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 10) {
+                Text("2. TONE MODE")
+                    .font(.system(size: 10, weight: .bold, design: .monospaced))
+                    .foregroundStyle(AppTheme.labelInk.opacity(0.72))
+                HStack(spacing: 10) {
+                    ForEach(TextAudioToneMode.allCases) { toneMode in
+                        textOptionTile(
+                            title: toneMode.displayName,
+                            subtitle: toneMode.shortDescription,
+                            badge: nil,
+                            isSelected: selectedTextAudioToneMode == toneMode,
+                            accent: AppTheme.knobBlue
+                        ) {
+                            selectedTextAudioToneMode = toneMode
+                        }
+                    }
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 10) {
+                Text("3. TONE")
+                    .font(.system(size: 10, weight: .bold, design: .monospaced))
+                    .foregroundStyle(AppTheme.labelInk.opacity(0.72))
+
+                if selectedTextAudioToneMode == .preset {
+                    LazyVGrid(columns: [.init(.flexible()), .init(.flexible())], spacing: 10) {
+                        ForEach(availableTonePresets) { preset in
+                            textOptionTile(
+                                title: preset.displayName,
+                                subtitle: preset.shortDescription,
+                                badge: "P\(Int(preset.baseParameterBundle.transpose.rounded()))",
+                                isSelected: selectedTextAudioTonePreset == preset,
+                                accent: AppTheme.knobOrange
+                            ) {
+                                selectedTextAudioTonePreset = preset
+                            }
+                        }
+                    }
+                } else {
+                    TextField(selectedTextAudioGender.customTonePlaceholder, text: $customTextAudioTone)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 12, weight: .medium, design: .rounded))
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 12)
+                        .background(
+                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                .fill(Color.white.opacity(0.24))
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                        .strokeBorder(Color.black.opacity(0.08), lineWidth: 1)
+                                )
+                        )
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    Text("4. TARGET MATCH")
+                        .font(.system(size: 10, weight: .bold, design: .monospaced))
+                        .foregroundStyle(AppTheme.labelInk.opacity(0.72))
+                    Spacer()
+                    Button("Apply tuned defaults") {
+                        onApplyRecommendedTextSettings()
+                    }
+                    .buttonStyle(SheetHeaderActionButtonStyle())
+                }
+                LazyVGrid(columns: [.init(.flexible()), .init(.flexible())], spacing: 10) {
+                    ForEach(availableMatchProfiles) { profile in
+                        textOptionTile(
+                            title: profile.displayName,
+                            subtitle: profile.shortDescription,
+                            badge: nil,
+                            isSelected: selectedTextAudioMatchProfile == profile,
+                            accent: AppTheme.ledGreen
+                        ) {
+                            selectedTextAudioMatchProfile = profile
+                        }
+                    }
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 10) {
+                Text("5. MAIN PARAMETERS")
+                    .font(.system(size: 10, weight: .bold, design: .monospaced))
+                    .foregroundStyle(AppTheme.labelInk.opacity(0.72))
+
+                VStack(alignment: .leading, spacing: 10) {
+                    parameterPickerRow(
+                        label: "SPEAKER",
+                        valueLabel: "ID \(speakerID)",
+                        selection: $speakerID,
+                        options: speakerOptions
+                    ) { option in
+                        "Speaker \(option)"
+                    }
+                    parameterPickerRow(
+                        label: "RATE",
+                        valueLabel: textAudioSpeechRate.displayName,
+                        selection: $textAudioSpeechRate,
+                        options: TextAudioSpeechRateID.allCases
+                    ) { option in
+                        option.displayName
+                    }
+                    parameterPickerRow(
+                        label: "F0",
+                        valueLabel: textAudioF0Method.displayName,
+                        selection: $textAudioF0Method,
+                        options: F0Method.allCases
+                    ) { option in
+                        option.displayName
+                    }
+                    parameterSliderRow(label: "TRANSPOSE", value: $textAudioTranspose, range: -12...18, step: 1, displayValue: "\(Int(textAudioTranspose.rounded())) semitones")
+                    parameterSliderRow(label: "INDEX", value: $textAudioIndexRate, range: 0.64...1.0, step: 0.01, displayValue: "\(Int((textAudioIndexRate * 100).rounded()))%")
+                    parameterSliderRow(label: "PROTECT", value: $textAudioProtect, range: 0.04...0.34, step: 0.01, displayValue: textAudioProtect.formatted(.number.precision(.fractionLength(2))))
+                    parameterSliderRow(label: "RMS MIX", value: $textAudioRmsMixRate, range: 0.82...1.0, step: 0.01, displayValue: textAudioRmsMixRate.formatted(.number.precision(.fractionLength(2))))
+                    parameterSliderRow(label: "FILTER", value: $textAudioFilterRadius, range: 0...7, step: 1, displayValue: "\(Int(textAudioFilterRadius.rounded()))")
+                    inputReadoutRow(label: "INDEX FILE", value: effectiveIndexPath?.components(separatedBy: "/").last ?? "AUTO MATCH")
+                    inputReadoutRow(label: "TONE", value: toneReadout)
+                }
+            }
+
+            TextEditor(text: $text)
+                .font(.system(size: 13, weight: .medium, design: .rounded))
+                .padding(10)
+                .frame(minHeight: 180, idealHeight: 220)
+                .background(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .fill(Color.white.opacity(0.30))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                .strokeBorder(Color.black.opacity(0.08), lineWidth: 1)
+                        )
+                )
+
+            HStack {
+                Text("\(trimmedText.count) chars")
+                    .font(.system(size: 10, weight: .medium, design: .monospaced))
+                    .foregroundStyle(AppTheme.labelInk.opacity(0.72))
+                Spacer()
+                Button("Use text input") {
+                    onUseText()
+                    dismiss()
+                }
+                .buttonStyle(SheetHeaderActionButtonStyle())
+                .disabled(trimmedText.isEmpty)
+            }
+        }
+    }
+
+    /// 文本生成配置卡片统一复用同一视觉骨架，避免每个区块都长得不一样。
+    private func textOptionTile(title: String, subtitle: String, badge: String?, isSelected: Bool, accent: Color, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 8) {
+                    Circle()
+                        .fill(isSelected ? accent : Color.black.opacity(0.16))
+                        .frame(width: 8, height: 8)
+                    Text(title)
+                        .font(.system(size: 12, weight: .bold, design: .rounded))
+                        .foregroundStyle(AppTheme.valueInk)
+                    Spacer(minLength: 0)
+                    if let badge, !badge.isEmpty {
+                        Text(badge)
+                            .font(.system(size: 9, weight: .bold, design: .monospaced))
+                            .foregroundStyle(AppTheme.labelInk.opacity(0.72))
+                    }
+                }
+
+                Text(subtitle)
+                    .font(.system(size: 10, weight: .medium, design: .rounded))
+                    .foregroundStyle(AppTheme.labelInk.opacity(0.78))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(Color.white.opacity(isSelected ? 0.34 : 0.20))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .strokeBorder((isSelected ? accent : Color.black).opacity(isSelected ? 0.18 : 0.08), lineWidth: 1)
+                    )
+            )
+        }
+        .buttonStyle(.plain)
+    }
+
+    // parameterSliderRow TODO: 补充方法注释。
+    private func parameterSliderRow(label: String, value: Binding<Double>, range: ClosedRange<Double>, step: Double, displayValue: String) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text(label)
+                    .font(.system(size: 10, weight: .bold, design: .monospaced))
+                    .foregroundStyle(AppTheme.labelInk.opacity(0.72))
+                Spacer()
+                Text(displayValue)
+                    .font(.system(size: 10, weight: .medium, design: .monospaced))
+                    .foregroundStyle(AppTheme.valueInk)
+            }
+            Slider(value: value, in: range, step: step)
+                .tint(AppTheme.knobOrange)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color.white.opacity(0.20))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .strokeBorder(Color.black.opacity(0.06), lineWidth: 1)
+                )
+        )
+    }
+
+    // parameterPickerRow TODO: 补充方法注释。
+    private func parameterPickerRow<Value: Hashable>(label: String, valueLabel: String, selection: Binding<Value>, options: [Value], title: @escaping (Value) -> String) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text(label)
+                    .font(.system(size: 10, weight: .bold, design: .monospaced))
+                    .foregroundStyle(AppTheme.labelInk.opacity(0.72))
+                Spacer()
+                Text(valueLabel)
+                    .font(.system(size: 10, weight: .medium, design: .monospaced))
+                    .foregroundStyle(AppTheme.valueInk)
+            }
+            Picker(label, selection: selection) {
+                ForEach(options, id: \.self) { option in
+                    Text(title(option)).tag(option)
+                }
+            }
+            .labelsHidden()
+            .pickerStyle(.menu)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color.white.opacity(0.20))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .strokeBorder(Color.black.opacity(0.06), lineWidth: 1)
+                )
+        )
+    }
+
+    // inputReadoutRow TODO: 补充方法注释。
+    private func inputReadoutRow(label: String, value: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            Text(label)
+                .font(.system(size: 10, weight: .bold, design: .monospaced))
+                .foregroundStyle(AppTheme.labelInk.opacity(0.72))
+                .frame(width: 54, alignment: .leading)
+            Text(value)
+                .font(.system(size: 11, weight: .medium, design: .rounded))
+                .foregroundStyle(AppTheme.valueInk)
+                .lineLimit(2)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color.white.opacity(0.20))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .strokeBorder(Color.black.opacity(0.06), lineWidth: 1)
+                )
+        )
+    }
+}
+
 private struct QueueInspectorSheet: View {
+    let inputMode: PrimaryInputMode
     let selectedModelName: String?
     let effectiveIndexPath: String?
     let f0Method: String
     let speakerID: Int
     let singleInputURL: URL?
+    let textInput: String
+    let textGender: TextAudioGenderID
+    let textToneLabel: String
+    let textToneMode: TextAudioToneMode
+    let textMatchProfile: TextAudioMatchProfileID
+    let textParameterBundle: TextAudioParameterBundle
     let batchInputDirectoryURL: URL?
     let batchInputFileURLs: [URL]
     let outputDirectoryURL: URL?
     let outputAudioURL: URL?
     let runStartedAt: Date?
+    let textRunStartedAt: Date?
+    let textAudioProgress: TextAudioProgressSnapshot?
     let statusMessage: String
     let lastExecutionSummary: String
     let inferenceError: String?
+    let textError: String?
     let batchError: String?
     let realtimeError: String?
     let isSingleRunning: Bool
+    let isTextRunning: Bool
     let isBatchRunning: Bool
     let isRealtimeRunning: Bool
 
     @Environment(\.dismiss) private var dismiss
 
     private var taskSummary: String {
+        if isTextRunning {
+            return textAudioProgress?.title ?? "Text audio generating"
+        }
         if isSingleRunning {
             return "Single convert running"
         }
@@ -4401,6 +5241,9 @@ private struct QueueInspectorSheet: View {
         }
         if isRealtimeRunning {
             return "Realtime monitoring active"
+        }
+        if inputMode == .text, !textInput.isEmpty {
+            return "Text prompt ready"
         }
         if singleInputURL != nil {
             return "Single input ready"
@@ -4415,6 +5258,9 @@ private struct QueueInspectorSheet: View {
         var rows: [(String, String)] = []
         if let inferenceError, !inferenceError.isEmpty {
             rows.append(("SINGLE", inferenceError))
+        }
+        if let textError, !textError.isEmpty {
+            rows.append(("TEXT", textError))
         }
         if let batchError, !batchError.isEmpty {
             rows.append(("BATCH", batchError))
@@ -4452,19 +5298,24 @@ private struct QueueInspectorSheet: View {
                         title: "ACTIVE",
                         rows: [
                             ("MODEL", selectedModelName ?? "NONE"),
+                            ("MODE", inputMode.queueLabel),
                             ("TASK", taskSummary),
                             ("INDEX", effectiveIndexPath ?? "AUTO"),
-                            ("F0", f0Method.uppercased()),
+                            ("F0", inputMode == .text ? textParameterBundle.f0Method.rawValue.uppercased() : f0Method.uppercased()),
                             ("SPK", "\(speakerID)"),
-                            ("STATUS", statusMessage),
+                            ("STATUS", isTextRunning ? (textAudioProgress?.detail ?? statusMessage) : statusMessage),
                             ("LAST", lastExecutionSummary),
                         ]
                     )
 
-                    if isSingleRunning || isBatchRunning || isRealtimeRunning {
+                    if isTextRunning, let textAudioProgress {
+                        QueueTextStageProgressCard(snapshot: textAudioProgress, startedAt: textRunStartedAt)
+                    }
+
+                    if isSingleRunning || isBatchRunning || isRealtimeRunning || (isTextRunning && textAudioProgress == nil) {
                         QueueRuntimeProgressCard(
                             title: taskSummary,
-                            startedAt: runStartedAt
+                            startedAt: isTextRunning ? textRunStartedAt : runStartedAt
                         )
                     }
 
@@ -4499,6 +5350,26 @@ private struct QueueInspectorSheet: View {
                             ("OUTPUT", outputAudioURL?.lastPathComponent ?? "PENDING"),
                         ]
                     )
+
+                    if inputMode == .text || !textInput.isEmpty || isTextRunning {
+                        queueGroup(
+                            title: "TEXT INPUT",
+                            rows: [
+                                ("PROMPT", textInput.isEmpty ? "No text entered" : textInput),
+                                ("GENDER", textGender.displayName),
+                                ("TONE", textToneLabel),
+                                ("MODE", textToneMode.displayName),
+                                ("MATCH", textMatchProfile.displayName),
+                                ("PITCH", "\(Int(textParameterBundle.transpose.rounded())) semitones"),
+                                ("RATE", textParameterBundle.speechRate.displayName),
+                                ("F0", textParameterBundle.f0Method.displayName),
+                                ("INDEX", "\(Int(textParameterBundle.indexRate * 100))%"),
+                                ("PROTECT", textParameterBundle.protect.formatted(.number.precision(.fractionLength(2)))),
+                                ("CHARS", "\(textInput.count)"),
+                                ("OUTPUT", outputAudioURL?.lastPathComponent ?? "PENDING"),
+                            ]
+                        )
+                    }
 
                     queueGroup(
                         title: "BATCH",
@@ -4545,6 +5416,7 @@ private struct QueueInspectorSheet: View {
         .background(AppTheme.consoleShellGradient)
     }
 
+    // queueGroup TODO: 补充方法注释。
     private func queueGroup(title: String, rows: [(String, String)]) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(title)
@@ -4583,10 +5455,12 @@ private struct QueueInspectorSheet: View {
         }
     }
 
+    // shouldAllowCopy TODO: 补充方法注释。
     private func shouldAllowCopy(for label: String) -> Bool {
-        ["STATUS", "LAST", "PATH", "OUTPUT", "OUT DIR", "INDEX"].contains(label)
+        ["STATUS", "LAST", "PATH", "OUTPUT", "OUT DIR", "INDEX", "PROMPT"].contains(label)
     }
 
+    // queueValueCard TODO: 补充方法注释。
     private func queueValueCard(title: String, value: String, accent: Color, allowCopy: Bool) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .firstTextBaseline) {
@@ -4617,6 +5491,7 @@ private struct QueueInspectorSheet: View {
         )
     }
 
+    // copyButton TODO: 补充方法注释。
     private func copyButton(label: String, value: String) -> some View {
         Button(label) {
             NSPasteboard.general.clearContents()
@@ -4719,7 +5594,7 @@ private struct ResultHistorySheet: View {
                     Text(entries.isEmpty ? "NO HISTORY YET" : "NO MATCHING RECORDS")
                         .font(.system(size: 13, weight: .bold, design: .monospaced))
                         .foregroundStyle(AppTheme.valueInk)
-                    Text(entries.isEmpty ? "Single convert, batch convert, and live monitor events will appear here after they run." : "Switch filters to inspect single, batch, or live records.")
+                    Text(entries.isEmpty ? "Single convert, text audio, batch convert, UVR, and live monitor events will appear here after they run." : "Switch filters to inspect single, text, batch, UVR, or live records.")
                         .font(.system(size: 11, weight: .medium, design: .rounded))
                         .foregroundStyle(AppTheme.labelInk.opacity(0.74))
                 }
@@ -4786,11 +5661,13 @@ private struct ResultHistorySheet: View {
         }
     }
 
+    // clearLabelForConfirmation TODO: 补充方法注释。
     private func clearLabelForConfirmation(kind: TaskHistoryKind?) -> String {
         guard let kind else { return "Delete all" }
         return "Delete \(kind.rawValue)"
     }
 
+    // clearConfirmationMessage TODO: 补充方法注释。
     private func clearConfirmationMessage(kind: TaskHistoryKind?) -> String {
         if let kind {
             return "This will remove every \(kind.rawValue) history record in the current filter and delete the related stored outputs from disk."
@@ -4809,6 +5686,9 @@ private struct ResultHistorySheet: View {
             historyFilterChip(label: "BATCH", count: entries.filter { $0.kind == .batch }.count, isSelected: selectedKind == .batch) {
                 selectedKind = .batch
             }
+            historyFilterChip(label: "TEXT", count: entries.filter { $0.kind == .text }.count, isSelected: selectedKind == .text) {
+                selectedKind = .text
+            }
             historyFilterChip(label: "LIVE", count: entries.filter { $0.kind == .realtime }.count, isSelected: selectedKind == .realtime) {
                 selectedKind = .realtime
             }
@@ -4819,6 +5699,7 @@ private struct ResultHistorySheet: View {
         }
     }
 
+    // historyFilterChip TODO: 补充方法注释。
     private func historyFilterChip(label: String, count: Int, isSelected: Bool, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             HStack(spacing: 6) {
@@ -4910,9 +5791,19 @@ private struct ResultHistoryCard: View {
                 historyRow("LEN", outputDurationLabel)
                 historyRow("INDEX", entry.indexPath.map(lastPath) ?? "AUTO", copyValue: entry.indexPath)
                 historyRow("F0", entry.f0Method?.uppercased() ?? "—")
+                if let parameterSummary = entry.parameterSummary, !parameterSummary.isEmpty {
+                    historyRow("CONFIG", parameterSummary)
+                }
+                if let timingSummary = entry.timingSummary, !timingSummary.isEmpty {
+                    historyRow("TIMING", timingSummary)
+                }
                 historyRow("SPK", entry.speakerID.map(String.init) ?? "—")
                 if let sourceEntry {
                     historyRow("SOURCE", "\(sourceEntry.kind.rawValue.uppercased()) / \(sourceEntry.title.uppercased())")
+                }
+                if entry.kind == .text,
+                   let sourceWav = entry.outputArtifacts.first(where: { $0.role == .textSource }) {
+                    historyRow("SRC WAV", sourceWav.label, copyValue: sourceWav.path)
                 }
                 if let sourceEntry, sourceEntry.kind == .uvr {
                     if let sourceVocal = sourceEntry.outputArtifacts.first(where: { $0.role == .uvrVocal }) {
@@ -4961,6 +5852,8 @@ private struct ResultHistoryCard: View {
             return AppTheme.knobOrange
         case .batch:
             return AppTheme.knobBlue
+        case .text:
+            return AppTheme.knobOchre
         case .realtime:
             return AppTheme.ledGreen
         case .uvr:
@@ -4987,7 +5880,7 @@ private struct ResultHistoryCard: View {
     private var outputState: ArtifactState {
         let candidatePath = mergedArtifact?.path
             ?? entry.outputPath
-            ?? entry.outputArtifacts.first(where: { $0.role == .singleOutput || $0.role == .uvrVocal })?.path
+            ?? entry.outputArtifacts.first(where: { $0.role == .singleOutput || $0.role == .textOutput || $0.role == .uvrVocal })?.path
         guard let candidatePath, !candidatePath.isEmpty else { return .unavailable }
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: candidatePath, isDirectory: &isDirectory) else {
@@ -5062,6 +5955,7 @@ private struct ResultHistoryCard: View {
         }
     }
 
+    // historyRow TODO: 补充方法注释。
     private func historyRow(_ label: String, _ value: String, accent: Color? = nil, copyValue: String? = nil) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 12) {
             Text(label)
@@ -5083,6 +5977,7 @@ private struct ResultHistoryCard: View {
         }
     }
 
+    // buttonChip TODO: 补充方法注释。
     private func buttonChip(label: String, action: @escaping () -> Void) -> some View {
         Button(label, action: action)
             .buttonStyle(.plain)
@@ -5100,6 +5995,7 @@ private struct ResultHistoryCard: View {
             )
     }
 
+    // destructiveChip TODO: 补充方法注释。
     private func destructiveChip(label: String, action: @escaping () -> Void) -> some View {
         Button(label, action: action)
             .buttonStyle(.plain)
@@ -5117,6 +6013,7 @@ private struct ResultHistoryCard: View {
             )
     }
 
+    // copyRecord TODO: 补充方法注释。
     private func copyRecord() {
         let lines = [
             "time: \(entry.timestamp.formatted(date: .abbreviated, time: .standard))",
@@ -5131,6 +6028,8 @@ private struct ResultHistoryCard: View {
             "store: \(entry.taskDirectoryPath ?? "none")",
             "index: \(entry.indexPath ?? "auto")",
             "f0: \(entry.f0Method ?? "—")",
+            "config: \(entry.parameterSummary ?? "none")",
+            "timing: \(entry.timingSummary ?? "none")",
             "speaker: \(entry.speakerID.map(String.init) ?? "—")",
             "sourceTask: \(entry.sourceTaskID?.uuidString ?? "none")",
             "error: \(entry.errorMessage ?? "none")",
@@ -5139,10 +6038,12 @@ private struct ResultHistoryCard: View {
         NSPasteboard.general.setString(lines.joined(separator: "\n"), forType: .string)
     }
 
+    // lastPath TODO: 补充方法注释。
     private func lastPath(_ path: String) -> String {
         (path as NSString).lastPathComponent
     }
 
+    // timeLabel TODO: 补充方法注释。
     private func timeLabel(_ value: TimeInterval) -> String {
         guard value.isFinite else { return "0:00" }
         let seconds = Int(value.rounded(.down))
@@ -5153,6 +6054,7 @@ private struct ResultHistoryCard: View {
 }
 
 private struct SheetHeaderActionButtonStyle: ButtonStyle {
+    // makeBody TODO: 补充方法注释。
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(.system(size: 12, weight: .semibold, design: .rounded))

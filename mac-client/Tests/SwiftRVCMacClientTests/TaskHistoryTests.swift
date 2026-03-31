@@ -91,6 +91,31 @@ final class TaskHistoryTests: XCTestCase {
         XCTAssertNil(entry.sourceTaskID)
     }
 
+    /// 验证文本生成音频任务会写入历史，并自动挂上生成产物。
+    func testTextAudioGenerationPersistsTextHistoryEntry() async throws {
+        let defaults = makeDefaultsSuite()
+        let appState = AppState(
+            environment: .fallback(),
+            bridgeClient: BusyTestBridgeClient(),
+            startMetricsTask: false,
+            userDefaults: defaults
+        )
+
+        appState.selectedModelName = "demo.pth"
+        appState.engineController.forceReadyForTesting()
+        appState.setTextAudioInput("hello from text audio")
+        await appState.runTextAudioGenerate()
+
+        XCTAssertEqual(appState.primaryInputMode, .text)
+        XCTAssertNotNil(appState.inferenceViewModel.outputAudioURL)
+        XCTAssertEqual(appState.taskHistory.first?.kind, .text)
+        XCTAssertEqual(appState.taskHistory.first?.status, .success)
+        XCTAssertEqual(appState.taskHistory.first?.outputArtifacts.contains(where: { $0.role == .textOutput }), true)
+        XCTAssertEqual(appState.taskHistory.first?.outputArtifacts.contains(where: { $0.role == .textSource }), true)
+        XCTAssertEqual(appState.taskHistory.first?.parameterSummary?.contains("RVC Voice Priority"), true)
+        XCTAssertEqual(appState.taskHistory.first?.timingSummary?.contains("Convert"), true)
+    }
+
     /// 构造隔离的 UserDefaults suite，避免污染真实本地历史。
     private func makeDefaultsSuite() -> UserDefaults {
         let suiteName = "SwiftRVCMacClientTests.\(UUID().uuidString)"

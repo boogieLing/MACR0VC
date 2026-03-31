@@ -1,4 +1,5 @@
 import XCTest
+import AVFoundation
 @testable import SwiftRVCMacClient
 
 @MainActor
@@ -73,6 +74,28 @@ final class AppStateBusyTests: XCTestCase {
         XCTAssertEqual(appState.statusMessage, BusyTestError.selectFailed.localizedDescription)
     }
 
+    /// 验证明显女声模型与女声源音组合时，模型切换会撤掉自动升调默认值。
+    func testSelectingFemaleModelClearsAutomaticFemaleTransposeBoost() async {
+        let appState = makeAppState()
+        appState.textAudioTranspose = 12
+        appState.selectedTextAudioGender = .female
+
+        await appState.selectModel("嘉然.pth")
+
+        XCTAssertEqual(appState.textAudioTranspose, 0)
+    }
+
+    /// 验证即使界面上残留正向 transpose，女模+女声请求归一时也不会继续做音高增幅。
+    func testEffectiveTextAudioParameterBundleSuppressesPositiveTransposeForFemaleTarget() {
+        let appState = makeAppState()
+        appState.selectedModelName = "Taffy_e350_s19950.pth"
+        appState.modelInfoSummary = "summary"
+        appState.selectedTextAudioGender = .female
+        appState.textAudioTranspose = 12
+
+        XCTAssertEqual(appState.effectiveTextAudioParameterBundle.transpose, 0)
+    }
+
     /// 构建关闭指标轮询的测试专用 AppState，避免后台任务干扰断言。
     private func makeAppState(bridgeClient: BusyTestBridgeClient = BusyTestBridgeClient()) -> AppState {
         AppState(
@@ -141,6 +164,49 @@ final class BusyTestBridgeClient: RVCBridgeClient {
     /// 返回空单文件推理结果，避免测试桩实现遗漏协议方法。
     func convertSingle(_ request: SingleInferenceRequest) async throws -> SingleInferenceResult {
         SingleInferenceResult(message: "", outputAudioURL: nil, outputDirectoryURL: nil)
+    }
+
+    /// 返回一段最小可播放音频，满足文本转音频链路测试。
+    func convertTextAudio(_ request: TextAudioRequest) async throws -> TextAudioResult {
+        let outputDirectoryURL = request.outputDirectoryURL
+        try FileManager.default.createDirectory(at: outputDirectoryURL, withIntermediateDirectories: true)
+        let outputURL = outputDirectoryURL.appendingPathComponent("text-audio-test").appendingPathExtension("wav")
+        let sourceURL = outputDirectoryURL.appendingPathComponent("text-audio-test-source").appendingPathExtension("wav")
+        let format = AVAudioFormat(standardFormatWithSampleRate: 24_000, channels: 1)!
+        let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 2400)!
+        buffer.frameLength = 2400
+        let outputFile = try AVAudioFile(forWriting: outputURL, settings: format.settings)
+        try outputFile.write(from: buffer)
+        let sourceFile = try AVAudioFile(forWriting: sourceURL, settings: format.settings)
+        try sourceFile.write(from: buffer)
+        return TextAudioResult(
+            message: "Text audio generated.",
+            sourceAudioURL: sourceURL,
+            outputAudioURL: outputURL,
+            outputDirectoryURL: outputDirectoryURL
+        )
+    }
+
+    /// 返回固定文本阶段快照，满足队列面板轮询协议。
+    func fetchTextAudioProgress() async throws -> TextAudioProgressSnapshot {
+        TextAudioProgressSnapshot(
+            active: false,
+            stage: .completed,
+            title: "Text task complete",
+            detail: "Stub text audio task finished.",
+            completedSteps: 5,
+            totalSteps: 5,
+            modelName: "demo.pth",
+            stageElapsedSeconds: 0,
+            totalElapsedSeconds: 1.8,
+            stageDurations: [
+                TextAudioStage.preparing.rawValue: 0.1,
+                TextAudioStage.loadingChatTTS.rawValue: 0.4,
+                TextAudioStage.generatingSpeech.rawValue: 0.6,
+                TextAudioStage.convertingVoice.rawValue: 0.5,
+                TextAudioStage.finalizing.rawValue: 0.2,
+            ]
+        )
     }
 
     /// 返回空批量推理结果，避免测试桩实现遗漏协议方法。

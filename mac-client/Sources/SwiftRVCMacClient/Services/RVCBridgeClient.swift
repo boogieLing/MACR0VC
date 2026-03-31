@@ -17,6 +17,12 @@ protocol RVCBridgeClient {
     /// Dispatches a single-file conversion request.
     func convertSingle(_ request: SingleInferenceRequest) async throws -> SingleInferenceResult
 
+    /// Generates expressive speech from text, then converts it into the active RVC target voice.
+    func convertTextAudio(_ request: TextAudioRequest) async throws -> TextAudioResult
+
+    /// Fetches the latest backend-side text generation stage for the queue inspector.
+    func fetchTextAudioProgress() async throws -> TextAudioProgressSnapshot
+
     /// Dispatches a batch conversion request.
     func convertBatch(_ request: BatchInferenceRequest) async throws -> BatchInferenceResult
 
@@ -132,6 +138,20 @@ final class PythonRVCBridgeClient: RVCBridgeClient {
         let payload = String(decoding: requestData, as: UTF8.self)
         let data = try await run(command: "convert-single", arguments: ["--request-json", payload])
         return try decode(SingleInferenceResult.self, from: data)
+    }
+
+    /// Generates source speech with ChatTTS on the backend, then runs it through the selected RVC model.
+    func convertTextAudio(_ request: TextAudioRequest) async throws -> TextAudioResult {
+        let requestData = try encoder.encode(request)
+        let payload = String(decoding: requestData, as: UTF8.self)
+        let data = try await run(command: "convert-text", arguments: ["--request-json", payload])
+        return try decode(TextAudioResult.self, from: data)
+    }
+
+    /// Polls the backend for the most recent text generation stage snapshot.
+    func fetchTextAudioProgress() async throws -> TextAudioProgressSnapshot {
+        let data = try await run(command: "text-status", arguments: [])
+        return try decode(TextAudioProgressSnapshot.self, from: data)
     }
 
     /// Dispatches a batch conversion request.

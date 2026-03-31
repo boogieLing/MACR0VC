@@ -22,6 +22,7 @@ struct ManagedOutputStorage {
         try ensureDirectory(environment.unifiedStorageRootDirectory)
         try ensureDirectory(environment.defaultSingleOutputDirectory)
         try ensureDirectory(environment.defaultBatchOutputDirectory)
+        try ensureDirectory(environment.defaultTextAudioOutputDirectory)
         try ensureDirectory(environment.defaultUVROutputDirectory)
         try ensureDirectory(environment.defaultONNXExportDirectory)
     }
@@ -58,6 +59,22 @@ struct ManagedOutputStorage {
         )
     }
 
+    /// 为文本生成音频任务预留独立输出目录。
+    func reserveTextAudioOutput(for text: String) throws -> ManagedTaskOutputReservation {
+        let taskID = UUID()
+        let taskDirectoryURL = try makeTaskDirectory(
+            family: "text",
+            slug: text,
+            taskID: taskID
+        )
+        return ManagedTaskOutputReservation(
+            taskID: taskID,
+            taskDirectoryURL: taskDirectoryURL,
+            primaryOutputDirectoryURL: taskDirectoryURL,
+            secondaryOutputDirectoryURL: nil
+        )
+    }
+
     /// Reserves paired vocals and instrumentals directories for one UVR task.
     func reserveUVROutputs(inputLabel: String?) throws -> ManagedTaskOutputReservation {
         let taskID = UUID()
@@ -78,6 +95,7 @@ struct ManagedOutputStorage {
         )
     }
 
+    // makeTaskDirectory TODO: 补充方法注释。
     private func makeTaskDirectory(family: String, slug: String, taskID: UUID) throws -> URL {
         try prepareBaseDirectories()
         let directoryURL = environment.unifiedStorageRootDirectory
@@ -88,12 +106,14 @@ struct ManagedOutputStorage {
         return directoryURL
     }
 
+    // directoryName TODO: 补充方法注释。
     private func directoryName(for slug: String, taskID: UUID) -> String {
         let timestamp = Self.directoryTimestampFormatter.string(from: Date())
         let compactID = String(taskID.uuidString.prefix(8))
         return "\(timestamp)-\(sanitizedSlug(slug))-\(compactID)"
     }
 
+    // sanitizedSlug TODO: 补充方法注释。
     private func sanitizedSlug(_ raw: String) -> String {
         let folded = raw.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: .current)
         let mapped = folded.unicodeScalars.map { scalar -> Character in
@@ -108,6 +128,7 @@ struct ManagedOutputStorage {
         return compact.isEmpty ? "task" : compact.lowercased()
     }
 
+    // ensureDirectory TODO: 补充方法注释。
     private func ensureDirectory(_ url: URL) throws {
         try fileManager.createDirectory(at: url, withIntermediateDirectories: true, attributes: nil)
     }

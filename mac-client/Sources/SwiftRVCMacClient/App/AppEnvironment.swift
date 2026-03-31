@@ -26,6 +26,10 @@ struct AppEnvironment {
         unifiedStorageRootDirectory.appendingPathComponent("outputs/batch", isDirectory: true)
     }
 
+    var defaultTextAudioOutputDirectory: URL {
+        unifiedStorageRootDirectory.appendingPathComponent("outputs/text", isDirectory: true)
+    }
+
     var defaultUVROutputDirectory: URL {
         unifiedStorageRootDirectory.appendingPathComponent("outputs/uvr", isDirectory: true)
     }
@@ -52,6 +56,7 @@ struct AppEnvironment {
         return "/usr/bin/python3"
     }
 
+    // detect TODO: 补充方法注释。
     static func detect(
         fileManager: FileManager = .default,
         currentDirectoryPath: String = FileManager.default.currentDirectoryPath,
@@ -94,6 +99,7 @@ struct AppEnvironment {
         throw AppEnvironmentError.repoRootNotFound
     }
 
+    // fallback TODO: 补充方法注释。
     static func fallback() -> AppEnvironment {
         let cwd = URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
         let repo = normalizedRepoRoot(from: cwd)
@@ -106,6 +112,7 @@ struct AppEnvironment {
         )
     }
 
+    // normalizedRepoRoot TODO: 补充方法注释。
     private static func normalizedRepoRoot(from candidate: URL) -> URL {
         if candidate.lastPathComponent == "mac-client" || candidate.lastPathComponent == "engine" {
             return candidate.deletingLastPathComponent()
