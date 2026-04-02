@@ -5,8 +5,25 @@ SHELL := /bin/bash
 .PHONY: help status engine-status bump-api-version swift-test engine-test test build-release package app app-info run-app dev-check release-check
 
 help: ## Show available development and release commands
-	@printf "Available targets:\n"
-	@awk 'BEGIN {FS = ": .*## "}; /^[a-zA-Z0-9_.-]+: .*## / {printf "  %-16s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
+	@printf "RVC-WebUI-MacOS command index\n\n"
+	@printf "Status:\n"
+	@printf "  %-16s %s\n" "make status" "Show root repository status"
+	@printf "  %-16s %s\n" "make engine-status" "Show nested engine repository status"
+	@printf "\nValidation:\n"
+	@printf "  %-16s %s\n" "make swift-test" "Run Swift client tests"
+	@printf "  %-16s %s\n" "make engine-test" "Run focused Python engine regression tests"
+	@printf "  %-16s %s\n" "make dev-check" "Run the shared development validation gate"
+	@printf "  %-16s %s\n" "make release-check" "Run the local release gate and verify the app bundle"
+	@printf "\nBuild:\n"
+	@printf "  %-16s %s\n" "make bump-api-version" "Bump backend API/build version and sync the client constant"
+	@printf "  %-16s %s\n" "make build-release" "Build the Swift client release executable"
+	@printf "  %-16s %s\n" "make package" "Build dist/SwiftRVCMacClient.app and print app summary"
+	@printf "  %-16s %s\n" "make app-info" "Print packaged app metadata and size summary"
+	@printf "  %-16s %s\n" "make run-app" "Launch dist/SwiftRVCMacClient.app for local verification"
+	@printf "\nCommon flows:\n"
+	@printf "  %-16s %s\n" "feature check" "make dev-check"
+	@printf "  %-16s %s\n" "package app" "make package"
+	@printf "  %-16s %s\n" "release gate" "make release-check"
 
 status: ## Show root repository status
 	git status --short

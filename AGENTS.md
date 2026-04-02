@@ -61,6 +61,13 @@ The default user-facing product is the packaged app built into `dist/SwiftRVCMac
   - `make engine-test`
   - `make status`
   - `make engine-status`
+- Recommended daily command sequence:
+  - inspect status: `make status && make engine-status`
+  - run local gate: `make dev-check`
+  - rebuild app when packaging matters: `make package`
+  - inspect artifact: `make app-info`
+  - launch packaged app: `make run-app`
+  - run release gate before handoff: `make release-check`
 
 ### Swift Client
 

@@ -22,6 +22,34 @@ This document defines the current standard development flow for `RVC-WebUI-MacOS
    ```
 3. Read the relevant boundary files before editing.
 
+## 2.1 Quick Command Map
+
+Use `make help` from repo root for the current command index.
+
+Most common daily commands:
+
+- inspect repo state:
+  ```bash
+  make status
+  make engine-status
+  ```
+- run the standard development gate:
+  ```bash
+  make dev-check
+  ```
+- rebuild the packaged app when UI, lifecycle, startup, or packaging behavior changed:
+  ```bash
+  make package
+  ```
+- print the current packaged artifact summary without rebuilding:
+  ```bash
+  make app-info
+  ```
+- launch the packaged app for a local smoke check:
+  ```bash
+  make run-app
+  ```
+
 ## 3. Development Rules
 
 - Default startup should keep realtime uninitialized until the user explicitly interacts with realtime features.
@@ -101,6 +129,33 @@ To launch the packaged app for local verification:
 
 ```bash
 make run-app
+```
+
+## 6.1 Recommended Task Sequences
+
+### Code Change Only
+
+```bash
+make status
+make engine-status
+make dev-check
+```
+
+### UI Or Lifecycle Change
+
+```bash
+make dev-check
+make package
+make run-app
+```
+
+### Packaging Or Release Script Change
+
+```bash
+make dev-check
+make package
+make app-info
+make release-check
 ```
 
 ## 7. Release Validation

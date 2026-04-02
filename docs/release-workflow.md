@@ -18,6 +18,16 @@ Before running the release flow:
    ```
 3. Confirm no unrelated local changes are being accidentally bundled.
 
+Quick command reference:
+
+```bash
+make help
+make package
+make app-info
+make run-app
+make release-check
+```
+
 ## 2. Standard Release Gate
 
 Run:
@@ -35,6 +45,13 @@ This does all of the following:
 5. Verifies critical `Info.plist` fields
 6. Runs `codesign --verify --deep --strict` when `codesign` is available
 7. Prints a compact app bundle summary
+
+If you only need to rebuild and inspect the artifact before the full gate:
+
+```bash
+make package
+make app-info
+```
 
 ## 3. Output
 
@@ -74,6 +91,15 @@ Before considering a local release candidate ready:
    - startup does not auto-initialize realtime
    - explicit realtime initialization still works
    - stopping realtime releases device bindings
+
+Suggested execution order:
+
+```bash
+make dev-check
+make package
+make run-app
+make release-check
+```
 
 ## 5. Known Limits
 
