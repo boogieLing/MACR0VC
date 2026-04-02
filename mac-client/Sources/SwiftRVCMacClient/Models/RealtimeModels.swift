@@ -65,6 +65,64 @@ struct RealtimeDeviceSnapshot: Codable {
     let channels: Int?
 }
 
+enum RealtimeOperationMode: String, Codable, Equatable {
+    case idle
+    case realtime
+    case single
+    case batch
+    case text
+
+    var displayName: String {
+        switch self {
+        case .idle:
+            return "Idle"
+        case .realtime:
+            return "Live voice conversion"
+        case .single:
+            return "Single convert"
+        case .batch:
+            return "Batch convert"
+        case .text:
+            return "Text audio generation"
+        }
+    }
+}
+
+enum RealtimeOperationPhase: String, Codable, Equatable {
+    case idle
+    case preparing
+    case running
+    case stopping
+    case failed
+
+    var isBlocking: Bool {
+        switch self {
+        case .preparing, .running, .stopping:
+            return true
+        case .idle, .failed:
+            return false
+        }
+    }
+}
+
+struct RealtimeOperationSnapshot: Codable, Equatable {
+    let mode: RealtimeOperationMode
+    let phase: RealtimeOperationPhase
+    let message: String
+    let blocking: Bool
+    let startedAt: String?
+    let lastFailure: String?
+
+    static let idle = RealtimeOperationSnapshot(
+        mode: .idle,
+        phase: .idle,
+        message: "Engine is idle.",
+        blocking: false,
+        startedAt: nil,
+        lastFailure: nil
+    )
+}
+
 struct RealtimeStatus: Codable {
     let running: Bool
     let function: String
@@ -83,6 +141,7 @@ struct RealtimeStatus: Codable {
 struct RealtimeStatusEnvelope: Codable {
     let devices: RealtimeDeviceSnapshot
     let status: RealtimeStatus
+    let operation: RealtimeOperationSnapshot
 }
 
 struct RealtimeStartRequest: Codable {

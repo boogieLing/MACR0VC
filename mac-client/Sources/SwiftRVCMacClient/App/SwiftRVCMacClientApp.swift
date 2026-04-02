@@ -1,8 +1,19 @@
 import SwiftUI
+import AppKit
+
+@MainActor
+final class AppLifecycleDelegate: NSObject, NSApplicationDelegate {
+    weak var appState: AppState?
+
+    func applicationWillTerminate(_ notification: Notification) {
+        appState?.prepareForTermination()
+    }
+}
 
 @main
 struct SwiftRVCMacClientApp: App {
     @AppStorage("app.language") private var appLanguageRawValue = AppLanguage.system.rawValue
+    @NSApplicationDelegateAdaptor(AppLifecycleDelegate.self) private var lifecycleDelegate
     @StateObject private var appState: AppState
 
     init() {
@@ -15,6 +26,9 @@ struct SwiftRVCMacClientApp: App {
             RootView()
                 .environmentObject(appState)
                 .frame(minWidth: 1260, minHeight: 760)
+                .onAppear {
+                    lifecycleDelegate.appState = appState
+                }
                 .task {
                     await appState.performInitialBootstrap()
                 }

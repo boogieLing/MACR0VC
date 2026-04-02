@@ -45,11 +45,32 @@ final class RealtimeViewModel: ObservableObject {
     @Published private(set) var inferTimeMs = 0
     @Published private(set) var lastError: String?
     @Published private(set) var lastRunSummary: String?
+    @Published private(set) var operation: RealtimeOperationSnapshot = .idle
 
     private let bridgeClient: RVCBridgeClient
 
     init(bridgeClient: RVCBridgeClient) {
         self.bridgeClient = bridgeClient
+    }
+
+    /// 清空本地 realtime 会话快照，避免在引擎未初始化 realtime 时保留旧路由或错误状态。
+    func resetSessionState() {
+        hostapis = []
+        inputDevices = []
+        outputDevices = []
+        selectedHostapi = nil
+        selectedInputDevice = nil
+        selectedOutputDevice = nil
+        sampleRate = 0
+        channels = 1
+        isRunning = false
+        delayTimeMs = 0
+        inferTimeMs = 0
+        lastError = nil
+        lastRunSummary = nil
+        operation = .idle
+        monitorMode = Defaults.monitorMode
+        wasapiExclusive = Defaults.wasapiExclusive
     }
 
     /// 将 host、输入、输出与监听路由回退为默认自动配置。
@@ -84,6 +105,7 @@ final class RealtimeViewModel: ObservableObject {
         let envelope = try await bridgeClient.fetchRealtimeStatus()
         applyDevices(envelope.devices)
         applyStatus(envelope.status)
+        operation = envelope.operation
     }
 
     func start(selectedModelName: String?, selectedIndexPath: String?, inferenceViewModel: InferenceViewModel) async {
@@ -166,6 +188,7 @@ final class RealtimeViewModel: ObservableObject {
             let envelope = try await bridgeClient.configureRealtime(request)
             applyDevices(envelope.devices)
             applyStatus(envelope.status)
+            operation = envelope.operation
         } catch {
             lastError = error.localizedDescription
         }

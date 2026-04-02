@@ -42,6 +42,7 @@ final class AppStateBusyTests: XCTestCase {
             configureStarted.fulfill()
         }
         let appState = makeAppState(bridgeClient: bridgeClient)
+        appState.setRealtimeContextLoadedForTesting()
 
         let task = Task {
             await appState.selectModel("demo.pth")
@@ -96,6 +97,114 @@ final class AppStateBusyTests: XCTestCase {
         XCTAssertEqual(appState.effectiveTextAudioParameterBundle.transpose, 0)
     }
 
+    /// 验证 realtime 运行时会阻塞 GO、卸载模型与缓存释放。
+    func testRealtimeBlockingDisablesConflictingActions() {
+        let appState = makeAppState()
+        appState.selectedModelName = "demo.pth"
+        appState.setRealtimeContextLoadedForTesting()
+        appState.setActiveOperation(
+            RealtimeOperationSnapshot(
+                mode: .realtime,
+                phase: .running,
+                message: "Live voice conversion is active.",
+                blocking: true,
+                startedAt: nil,
+                lastFailure: nil
+            )
+        )
+
+        XCTAssertFalse(appState.canRunConvertAction)
+        XCTAssertFalse(appState.canUnloadSelectedModel)
+        XCTAssertFalse(appState.canReleaseRuntimeMemory)
+        XCTAssertEqual(appState.liveButtonTitle, "STOP")
+    }
+
+    /// 验证默认启动时不会预加载 realtime 链路，因此 LIVE 默认不可用。
+    func testRealtimeContextStartsUnloadedByDefault() {
+        let appState = makeAppState()
+        appState.selectedModelName = "demo.pth"
+        appState.realtimeViewModel.selectedInputDevice = "Mic"
+        appState.realtimeViewModel.selectedOutputDevice = "Speaker"
+
+        XCTAssertFalse(appState.realtimeContextLoaded)
+        XCTAssertFalse(appState.canToggleLive)
+    }
+
+    /// 验证离线批处理运行中会反向阻塞 LIVE。
+    func testOfflineBlockingDisablesLiveToggle() {
+        let appState = makeAppState()
+        appState.selectedModelName = "demo.pth"
+        appState.setActiveOperation(
+            RealtimeOperationSnapshot(
+                mode: .batch,
+                phase: .running,
+                message: "Batch convert running.",
+                blocking: true,
+                startedAt: nil,
+                lastFailure: nil
+            )
+        )
+
+        XCTAssertFalse(appState.canToggleLive)
+        XCTAssertEqual(appState.sharedActionBlockReason, "LIVE is blocked while batch convert is active.")
+    }
+
+    /// 验证共享 operation snapshot 会覆盖默认状态文案。
+    func testActiveOperationOverridesStatusMessageWhileRunningOrFailed() {
+        let appState = makeAppState()
+        appState.statusMessage = "Idle"
+        appState.setActiveOperation(
+            RealtimeOperationSnapshot(
+                mode: .realtime,
+                phase: .running,
+                message: "Live voice conversion is active.",
+                blocking: true,
+                startedAt: "2026-03-31T14:00:00Z",
+                lastFailure: nil
+            )
+        )
+
+        XCTAssertEqual(appState.effectiveStatusMessage, "Live voice conversion is active.")
+
+        appState.failLocalOperation(mode: .realtime, message: "Live failed", lastFailure: "Input device missing.")
+
+        XCTAssertEqual(appState.effectiveStatusMessage, "Input device missing.")
+    }
+
+    /// 验证启动前清理会把本地 operation 和失效端口一起清空，避免下一轮自举复用脏状态。
+    func testPrepareForLaunchCleanupClearsOperationAndPort() {
+        let appState = makeAppState()
+        appState.engineController.forceReadyForTesting(port: 7871)
+        appState.setActiveOperation(
+            RealtimeOperationSnapshot(
+                mode: .realtime,
+                phase: .running,
+                message: "Live voice conversion is active.",
+                blocking: true,
+                startedAt: nil,
+                lastFailure: nil
+            )
+        )
+
+        appState.prepareForLaunchCleanup()
+
+        XCTAssertEqual(appState.activeOperation, .idle)
+        XCTAssertNil(appState.engineController.port)
+        XCTAssertEqual(appState.engineController.state, .idle)
+    }
+
+    /// 验证 stopEngine 在没有本地子进程时也会清空端口，避免 UI 持续指向失效 backend。
+    func testStopEngineClearsPortWithoutOwnedProcess() {
+        let appState = makeAppState()
+        appState.engineController.forceReadyForTesting(port: 7872)
+
+        appState.stopEngine()
+
+        XCTAssertNil(appState.engineController.port)
+        XCTAssertEqual(appState.engineController.state, .idle)
+        XCTAssertEqual(appState.activeOperation, .idle)
+    }
+
     /// 构建关闭指标轮询的测试专用 AppState，避免后台任务干扰断言。
     private func makeAppState(bridgeClient: BusyTestBridgeClient = BusyTestBridgeClient()) -> AppState {
         AppState(
@@ -122,6 +231,7 @@ final class BusyTestBridgeClient: RVCBridgeClient {
     var selectModelError: Error?
     var pauseConfigureRealtime = false
     var onConfigureRealtimeStart: (() -> Void)?
+    var operationSnapshot: RealtimeOperationSnapshot = .idle
 
     private var configureRealtimeContinuation: CheckedContinuation<Void, Never>?
 
@@ -291,7 +401,7 @@ final class BusyTestBridgeClient: RVCBridgeClient {
 
     /// 返回空闲实时状态，满足状态查询协议。
     func fetchRealtimeStatus() async throws -> RealtimeStatusEnvelope {
-        RealtimeStatusEnvelope(devices: try await refreshRealtimeDevices(), status: idleRealtimeStatus)
+        RealtimeStatusEnvelope(devices: try await refreshRealtimeDevices(), status: idleRealtimeStatus, operation: operationSnapshot)
     }
 
     /// 在需要时挂起实时配置，以验证模型切换等待态不会提前结束。
@@ -304,7 +414,7 @@ final class BusyTestBridgeClient: RVCBridgeClient {
             }
         }
 
-        return RealtimeStatusEnvelope(devices: try await refreshRealtimeDevices(), status: idleRealtimeStatus)
+        return RealtimeStatusEnvelope(devices: try await refreshRealtimeDevices(), status: idleRealtimeStatus, operation: operationSnapshot)
     }
 
     /// 返回空闲实时状态，满足实时启动协议。

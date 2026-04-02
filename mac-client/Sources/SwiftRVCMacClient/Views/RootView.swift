@@ -178,7 +178,7 @@ struct RootView: View {
                 runStartedAt: appState.inferenceViewModel.runStartedAt,
                 textRunStartedAt: appState.textAudioRunStartedAt,
                 textAudioProgress: appState.textAudioProgress,
-                statusMessage: appState.statusMessage,
+                statusMessage: appState.effectiveStatusMessage,
                 lastExecutionSummary: appState.lastExecutionSummary,
                 inferenceError: appState.inferenceViewModel.errorMessage,
                 textError: appState.textAudioErrorMessage,
@@ -187,7 +187,8 @@ struct RootView: View {
                 isSingleRunning: appState.inferenceViewModel.isRunning,
                 isTextRunning: appState.isGeneratingTextAudio,
                 isBatchRunning: appState.batchViewModel.isRunning,
-                isRealtimeRunning: appState.realtimeViewModel.isRunning
+                isRealtimeRunning: appState.realtimeViewModel.isRunning,
+                activeOperation: appState.activeOperation
             )
         }
         .sheet(isPresented: $isHistoryPresented) {
@@ -240,8 +241,12 @@ struct RootView: View {
                 effectiveIndexPath: appState.effectiveSelectedIndexPath,
                 singleInputURL: appState.inferenceViewModel.inputFileURL,
                 batchInputFileURLs: appState.batchViewModel.inputFileURLs,
+                availableUVRVocalEntries: appState.availableUVRVocalEntries,
                 onChooseAudioFile: chooseAudioFile,
                 onChooseAudioFiles: chooseBatchInputFiles,
+                onUseUVRVocal: { entry in
+                    appState.useUVRVocalInput(from: entry)
+                },
                 onApplyRecommendedTextSettings: appState.applyTextAudioDefaultsFromSelection,
                 onUseText: {
                     appState.setTextAudioInput(textAudioDraft)
@@ -335,12 +340,14 @@ struct RootView: View {
                 selectedSpeakerCount: appState.selectedSpeakerCount,
                 parameterBank: parameterBank,
                 modelsCount: appState.models.count,
-                statusMessage: appState.statusMessage,
+                statusMessage: appState.effectiveStatusMessage,
                 lastExecutionSummary: appState.lastExecutionSummary,
                 isBootstrapBusy: appState.isBootstrapBusy,
                 isCatalogBusy: appState.isCatalogBusy,
                 isModelSelectionBusy: appState.isModelSelectionBusy,
                 modelSelectionBusyMessage: appState.modelSelectionBusyMessage,
+                activeOperation: appState.activeOperation,
+                canRunConvertAction: appState.canRunConvertAction,
                 onSelectModel: { model in
                     Task { await appState.selectModel(model) }
                 },
@@ -373,7 +380,7 @@ struct RootView: View {
                 indexPaths: appState.indexPaths,
                 selectedModelName: appState.selectedModelName,
                 parameterBank: parameterBank,
-                statusMessage: appState.statusMessage,
+                statusMessage: appState.effectiveStatusMessage,
                 lastExecutionSummary: appState.lastExecutionSummary,
                 catalogModelCount: appState.models.count,
                 catalogIndexCount: appState.indexPaths.count,
@@ -385,6 +392,15 @@ struct RootView: View {
                 isBootstrapBusy: appState.isBootstrapBusy,
                 isCatalogBusy: appState.isCatalogBusy,
                 isModelSelectionBusy: appState.isModelSelectionBusy,
+                activeOperation: appState.activeOperation,
+                liveStatusLabel: appState.liveStatusLabel,
+                sharedActionBlockReason: appState.sharedActionBlockReason,
+                canRunConvertAction: appState.canRunConvertAction,
+                canRunBatchAction: appState.canRunBatchAction,
+                canToggleLive: appState.canToggleLive,
+                liveButtonTitle: appState.liveButtonTitle,
+                canUnloadSelectedModel: appState.canUnloadSelectedModel,
+                canReleaseRuntimeMemory: appState.canReleaseRuntimeMemory,
                 hasBackgroundTrack: appState.backgroundAudioURL != nil,
                 isBackgroundEnabled: appState.isBackgroundMixEnabled,
                 backgroundMixLevel: appState.backgroundMixLevel,
@@ -497,7 +513,7 @@ struct RootView: View {
         case .refreshEngineConnection:
             Task { await appState.refreshEngineConnection() }
         case .refreshRealtimeDevices:
-            Task { await appState.refreshRealtimeContext() }
+            Task { await appState.ensureRealtimeContextLoaded() }
         case .openWeights:
             appState.openWeightsDirectory()
         case .openIndices:
@@ -964,6 +980,8 @@ private struct ConsoleLeftRail: View {
     let isCatalogBusy: Bool
     let isModelSelectionBusy: Bool
     let modelSelectionBusyMessage: String?
+    let activeOperation: RealtimeOperationSnapshot
+    let canRunConvertAction: Bool
     let onSelectModel: (String) -> Void
     let onSelectIndexPath: (String) -> Void
     let onSelectParameterBank: (ConsoleParameterBank) -> Void
@@ -1108,19 +1126,11 @@ private struct ConsoleLeftRail: View {
     }
 
     private var isModelPickerDisabled: Bool {
-        isBootstrapBusy || isCatalogBusy || isModelSelectionBusy
+        isBootstrapBusy || isCatalogBusy || isModelSelectionBusy || activeOperation.blocking
     }
 
     /// 根据当前输入模式判断 GO 是否可执行，文本模式同样必须依赖引擎和目标模型。
-    private var goActionEnabled: Bool {
-        if primaryInputMode == .text {
-            return engineController.state == .ready
-                && selectedModelName != nil
-                && !isGeneratingTextAudio
-                && !textAudioInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        }
-        return engineController.state == .ready && !inferenceViewModel.isRunning
-    }
+    private var goActionEnabled: Bool { canRunConvertAction }
 
     /// 渲染左侧实时参数机架。
     private func realtimeLabRack(compact: Bool, tight: Bool) -> some View {
@@ -1378,6 +1388,15 @@ private struct ConsoleDeck: View {
     let isBootstrapBusy: Bool
     let isCatalogBusy: Bool
     let isModelSelectionBusy: Bool
+    let activeOperation: RealtimeOperationSnapshot
+    let liveStatusLabel: String?
+    let sharedActionBlockReason: String?
+    let canRunConvertAction: Bool
+    let canRunBatchAction: Bool
+    let canToggleLive: Bool
+    let liveButtonTitle: String
+    let canUnloadSelectedModel: Bool
+    let canReleaseRuntimeMemory: Bool
     let hasBackgroundTrack: Bool
     let isBackgroundEnabled: Bool
     let backgroundMixLevel: Double
@@ -1531,7 +1550,7 @@ private struct ConsoleDeck: View {
             ConsoleActionItem(id: "audio", title: "AUDIO", systemImage: "speaker.wave.2.fill", action: .refreshRealtimeDevices, isEnabled: engineController.state == .ready, accent: AppTheme.knobGrey),
             ConsoleActionItem(id: "asset", title: "ASSET", systemImage: "shippingbox", action: .showAssetReport, isEnabled: true, accent: AppTheme.knobGrey),
             ConsoleActionItem(id: "help", title: "HELP", systemImage: "questionmark.circle", action: .showFAQ, isEnabled: true, accent: AppTheme.knobBlue),
-            ConsoleActionItem(id: "run", title: realtimeViewModel.isRunning ? "STOP" : "LIVE", systemImage: realtimeViewModel.isRunning ? "stop.fill" : "play.fill", action: realtimeViewModel.isRunning ? .stopRealtime : .startRealtime, isEnabled: engineController.state == .ready && selectedModelName != nil && !realtimeMissingRoute && !isModelSelectionBusy, accent: realtimeViewModel.isRunning ? AppTheme.knobGrey : AppTheme.knobOrange),
+            ConsoleActionItem(id: "run", title: liveButtonTitle, systemImage: liveButtonTitle == "STOP" ? "stop.fill" : "play.fill", action: liveButtonTitle == "STOP" ? .stopRealtime : .startRealtime, isEnabled: canToggleLive, accent: liveButtonTitle == "STOP" ? AppTheme.knobGrey : AppTheme.knobOrange),
         ]
     }
 
@@ -1543,14 +1562,8 @@ private struct ConsoleDeck: View {
         realtimeViewModel.selectedInputDevice == nil || realtimeViewModel.selectedOutputDevice == nil
     }
 
-    /// 根据当前输入模式判断 GO 是否可执行，文本模式不依赖引擎或模型。
-    private var goActionEnabled: Bool {
-        if primaryInputMode == .text {
-            return !isGeneratingTextAudio
-                && !textAudioInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        }
-        return engineController.state == .ready && !inferenceViewModel.isRunning
-    }
+    /// GO 的启用条件由 AppState 统一仲裁，避免与 realtime / batch / text 状态分裂。
+    private var goActionEnabled: Bool { canRunConvertAction }
 
     private var divider: some View {
         Rectangle()
@@ -1575,7 +1588,7 @@ private struct ConsoleDeck: View {
             HStack {
                 Text("VOICE PATCH")
                 Spacer()
-                Text(statusMessage.uppercased())
+                Text((liveStatusLabel ?? statusMessage).uppercased())
                     .minimumScaleFactor(compact ? 0.58 : 0.7)
                     .lineLimit(1)
                     .frame(maxWidth: compact ? 180 : 280, alignment: .trailing)
@@ -1818,8 +1831,8 @@ private struct ConsoleDeck: View {
             ConsoleActionItem(id: "single", title: "GO", systemImage: "record.circle", action: .convertSingle, isEnabled: goActionEnabled, accent: AppTheme.knobOrange),
             ConsoleActionItem(id: "play", title: "PLAY", systemImage: "play.fill", action: .playPreview, isEnabled: inferenceViewModel.outputAudioURL != nil, accent: AppTheme.knobOrange),
             ConsoleActionItem(id: "open", title: "OPEN", systemImage: "folder.badge.waveform", action: .revealOutput, isEnabled: inferenceViewModel.outputAudioURL != nil, accent: nil),
-            ConsoleActionItem(id: "unld", title: "UNLD", systemImage: "eject.fill", action: .unloadModel, isEnabled: selectedModelName != nil && !isModelSelectionBusy, accent: AppTheme.knobGrey),
-            ConsoleActionItem(id: "cache", title: "CACHE", systemImage: "memorychip", action: .releaseRuntimeCaches, isEnabled: engineController.state == .ready, accent: AppTheme.knobBlue),
+            ConsoleActionItem(id: "unld", title: "UNLD", systemImage: "eject.fill", action: .unloadModel, isEnabled: canUnloadSelectedModel, accent: AppTheme.knobGrey),
+            ConsoleActionItem(id: "cache", title: "CACHE", systemImage: "memorychip", action: .releaseRuntimeCaches, isEnabled: canReleaseRuntimeMemory, accent: AppTheme.knobBlue),
         ]
     }
 
@@ -1878,6 +1891,14 @@ private struct ConsoleDeck: View {
                 }
             }
             .frame(width: compact ? width : actionGridWidth, alignment: .leading)
+
+            if let sharedActionBlockReason, !sharedActionBlockReason.isEmpty {
+                Text(sharedActionBlockReason)
+                    .font(.system(size: tight ? 9 : 10, weight: .medium, design: .monospaced))
+                    .foregroundStyle(AppTheme.labelInk.opacity(0.78))
+                    .lineLimit(2)
+                    .padding(.top, 2)
+            }
         }
         .frame(maxHeight: .infinity, alignment: .topLeading)
         .padding(.bottom, tight ? 2 : 4)
@@ -4765,8 +4786,10 @@ private struct InputSourceSheet: View {
     let effectiveIndexPath: String?
     let singleInputURL: URL?
     let batchInputFileURLs: [URL]
+    let availableUVRVocalEntries: [TaskHistoryEntry]
     let onChooseAudioFile: () -> Void
     let onChooseAudioFiles: () -> Void
+    let onUseUVRVocal: (TaskHistoryEntry) -> Void
     let onApplyRecommendedTextSettings: () -> Void
     let onUseText: () -> Void
 
@@ -4898,6 +4921,60 @@ private struct InputSourceSheet: View {
                 inputReadoutRow(label: "MODE", value: "Audio file")
                 inputReadoutRow(label: "SINGLE", value: singleInputURL?.lastPathComponent ?? "None selected")
                 inputReadoutRow(label: "QUEUE", value: batchInputFileURLs.isEmpty ? "No queued files" : "\(batchInputFileURLs.count) file(s) loaded")
+            }
+
+            Divider()
+                .overlay(Color.black.opacity(0.06))
+
+            VStack(alignment: .leading, spacing: 10) {
+                Text("RECENT UVR VOCALS")
+                    .font(.system(size: 10, weight: .bold, design: .monospaced))
+                    .foregroundStyle(AppTheme.labelInk.opacity(0.72))
+
+                if availableUVRVocalEntries.isEmpty {
+                    Text("Run UVR first and its vocal stems will appear here for one-click reuse.")
+                        .font(.system(size: 11, weight: .medium, design: .rounded))
+                        .foregroundStyle(AppTheme.labelInk.opacity(0.68))
+                } else {
+                    VStack(alignment: .leading, spacing: 8) {
+                        ForEach(Array(availableUVRVocalEntries.prefix(6))) { entry in
+                            Button {
+                                onUseUVRVocal(entry)
+                                dismiss()
+                            } label: {
+                                HStack(alignment: .center, spacing: 10) {
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        Text(entry.outputLabel ?? entry.inputLabel ?? "UVR vocal")
+                                            .font(.system(size: 12, weight: .semibold, design: .rounded))
+                                            .foregroundStyle(AppTheme.valueInk)
+                                            .lineLimit(1)
+                                        Text(entry.timestamp.formatted(date: .abbreviated, time: .shortened))
+                                            .font(.system(size: 10, weight: .medium, design: .monospaced))
+                                            .foregroundStyle(AppTheme.labelInk.opacity(0.68))
+                                            .lineLimit(1)
+                                    }
+
+                                    Spacer()
+
+                                    Text("USE")
+                                        .font(.system(size: 9, weight: .bold, design: .monospaced))
+                                        .foregroundStyle(AppTheme.knobOrange)
+                                }
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 10)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                        .fill(Color.white.opacity(0.24))
+                                        .overlay(
+                                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                                .strokeBorder(Color.black.opacity(0.08), lineWidth: 1)
+                                        )
+                                )
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
             }
         }
     }
@@ -5226,10 +5303,14 @@ private struct QueueInspectorSheet: View {
     let isTextRunning: Bool
     let isBatchRunning: Bool
     let isRealtimeRunning: Bool
+    let activeOperation: RealtimeOperationSnapshot
 
     @Environment(\.dismiss) private var dismiss
 
     private var taskSummary: String {
+        if activeOperation.blocking || activeOperation.phase == .failed {
+            return activeOperation.message
+        }
         if isTextRunning {
             return textAudioProgress?.title ?? "Text audio generating"
         }
@@ -5303,7 +5384,7 @@ private struct QueueInspectorSheet: View {
                             ("INDEX", effectiveIndexPath ?? "AUTO"),
                             ("F0", inputMode == .text ? textParameterBundle.f0Method.rawValue.uppercased() : f0Method.uppercased()),
                             ("SPK", "\(speakerID)"),
-                            ("STATUS", isTextRunning ? (textAudioProgress?.detail ?? statusMessage) : statusMessage),
+                            ("STATUS", activeOperation.blocking || activeOperation.phase == .failed ? (activeOperation.lastFailure ?? activeOperation.message) : (isTextRunning ? (textAudioProgress?.detail ?? statusMessage) : statusMessage)),
                             ("LAST", lastExecutionSummary),
                         ]
                     )

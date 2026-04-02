@@ -59,6 +59,8 @@ final class AppState: ObservableObject {
     @Published var selectedSpeakerCount = 0
     @Published var appMemoryLabel = "—"
     @Published var engineMemoryLabel = "—"
+    @Published private(set) var activeOperation: RealtimeOperationSnapshot = .idle
+    @Published private(set) var realtimeContextLoaded = false
     @Published private(set) var taskHistory: [TaskHistoryEntry] = []
     @Published var primaryInputMode: PrimaryInputMode = .file
     @Published var textAudioInput = ""
@@ -312,6 +314,89 @@ final class AppState: ObservableObject {
         inferenceViewModel.effectiveIndexPath
     }
 
+    var effectiveStatusMessage: String {
+        if activeOperation.blocking || activeOperation.phase == .failed {
+            return activeOperation.lastFailure ?? activeOperation.message
+        }
+        return statusMessage
+    }
+
+    var liveStatusLabel: String? {
+        guard activeOperation.mode == .realtime else { return nil }
+        switch activeOperation.phase {
+        case .preparing:
+            return "Preparing live route"
+        case .running:
+            return "Live active"
+        case .stopping:
+            return "Stopping live route"
+        case .failed:
+            return "Live failed"
+        case .idle:
+            return nil
+        }
+    }
+
+    var sharedActionBlockReason: String? {
+        guard activeOperation.blocking || activeOperation.phase == .failed else { return nil }
+        if activeOperation.mode == .realtime && activeOperation.phase.isBlocking {
+            return "GO and text generation are blocked while live voice conversion is active."
+        }
+        if activeOperation.mode == .realtime && activeOperation.phase == .failed {
+            return activeOperation.lastFailure ?? activeOperation.message
+        }
+        if activeOperation.blocking {
+            return "LIVE is blocked while \(activeOperation.mode.displayName.lowercased()) is active."
+        }
+        return nil
+    }
+
+    var canRunConvertAction: Bool {
+        if activeOperation.blocking {
+            return false
+        }
+        if primaryInputMode == .text {
+            return engineController.state == .ready
+                && selectedModelName != nil
+                && !isGeneratingTextAudio
+                && !textAudioInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+        return engineController.state == .ready && !inferenceViewModel.isRunning
+    }
+
+    var canRunBatchAction: Bool {
+        engineController.state == .ready && !batchViewModel.isRunning && !activeOperation.blocking
+    }
+
+    var canToggleLive: Bool {
+        if !realtimeContextLoaded {
+            return false
+        }
+        if activeOperation.blocking && activeOperation.mode != .realtime {
+            return false
+        }
+        if activeOperation.mode == .realtime && activeOperation.phase.isBlocking {
+            return engineController.state == .ready && !isModelSelectionBusy
+        }
+        let hasRoute = realtimeViewModel.selectedInputDevice != nil && realtimeViewModel.selectedOutputDevice != nil
+        return engineController.state == .ready
+            && selectedModelName != nil
+            && hasRoute
+            && !isModelSelectionBusy
+    }
+
+    var liveButtonTitle: String {
+        activeOperation.mode == .realtime && activeOperation.phase.isBlocking ? "STOP" : "LIVE"
+    }
+
+    var canUnloadSelectedModel: Bool {
+        selectedModelName != nil && !isModelSelectionBusy && !activeOperation.blocking
+    }
+
+    var canReleaseRuntimeMemory: Bool {
+        engineController.state == .ready && !activeOperation.blocking
+    }
+
     var isBusy: Bool {
         activeBusyDescriptor != nil
     }
@@ -348,10 +433,47 @@ final class AppState: ObservableObject {
         synchronizeBusyDescriptor()
     }
 
+    func setActiveOperation(_ snapshot: RealtimeOperationSnapshot) {
+        activeOperation = snapshot
+        synchronizeBusyDescriptor()
+    }
+
+    func beginLocalOperation(mode: RealtimeOperationMode, phase: RealtimeOperationPhase, message: String, blocking: Bool = true) {
+        setActiveOperation(
+            RealtimeOperationSnapshot(
+                mode: mode,
+                phase: phase,
+                message: message,
+                blocking: blocking,
+                startedAt: ISO8601DateFormatter().string(from: Date()),
+                lastFailure: nil
+            )
+        )
+    }
+
+    func failLocalOperation(mode: RealtimeOperationMode, message: String, lastFailure: String) {
+        setActiveOperation(
+            RealtimeOperationSnapshot(
+                mode: mode,
+                phase: .failed,
+                message: message,
+                blocking: false,
+                startedAt: activeOperation.startedAt,
+                lastFailure: lastFailure
+            )
+        )
+    }
+
+    func clearLocalOperation(ifMode mode: RealtimeOperationMode? = nil) {
+        guard mode == nil || activeOperation.mode == mode else { return }
+        setActiveOperation(.idle)
+    }
+
     /// 执行首次启动自举流程，并保证启动等待态覆盖整个初始化链路。
     func performInitialBootstrap() async {
         guard !hasBootstrapped else { return }
         hasBootstrapped = true
+        prepareForLaunchCleanup()
         beginBusy(.bootstrap)
         defer { endBusy(.bootstrap) }
         await startEngine()
@@ -361,11 +483,18 @@ final class AppState: ObservableObject {
     func startEngine() async {
         statusMessage = L10n.tr("status.engine.starting")
         await engineController.start()
+        if engineController.state != .ready {
+            statusMessage = L10n.tr("status.engine.restart")
+            await engineController.restart()
+        }
         if engineController.state == .ready {
             statusMessage = L10n.tr("status.engine.ready", availablePortDescription)
             presentToast(message: statusMessage, style: .success)
             await refreshModels()
-            await refreshRealtimeContext()
+            clearRealtimeContext()
+        } else if let lastError = engineController.lastError {
+            statusMessage = lastError
+            presentToast(message: lastError, style: .error)
         }
     }
 
@@ -377,7 +506,7 @@ final class AppState: ObservableObject {
             statusMessage = L10n.tr("status.engine.restarted", availablePortDescription)
             presentToast(message: statusMessage, style: .success)
             await refreshModels()
-            await refreshRealtimeContext()
+            clearRealtimeContext()
         }
     }
 
@@ -389,7 +518,11 @@ final class AppState: ObservableObject {
             statusMessage = "Connected to backend \(engineController.backendVersionLabel) on \(availablePortDescription)."
             presentToast(message: statusMessage, style: .success)
             await refreshModels()
-            await refreshRealtimeContext()
+            if realtimeContextLoaded {
+                await refreshRealtimeContext(force: true)
+            } else {
+                clearRealtimeContext()
+            }
         } else if let lastError = engineController.lastError {
             statusMessage = lastError
             presentToast(message: lastError, style: .error)
@@ -399,8 +532,54 @@ final class AppState: ObservableObject {
     /// 停止本地引擎并广播已停止状态。
     func stopEngine() {
         engineController.stop()
+        clearRealtimeContext()
         statusMessage = L10n.tr("status.engine.stopped")
         presentToast(message: statusMessage, style: .info)
+    }
+
+    /// 在启动前清空本地缓存与会话残留，避免旧预览、旧状态和失效端口污染新会话。
+    func prepareForLaunchCleanup() {
+        navigationResetTask?.cancel()
+        toastDismissTask?.cancel()
+        backgroundPreviewRefreshTask?.cancel()
+        textAudioProgressTask?.cancel()
+        dismissToast()
+        audioPlayer.stop()
+        audioPlayer.load(url: nil)
+        currentBackgroundPreviewURL = nil
+        backgroundAudioURL = nil
+        mixedOutputURL = nil
+        textAudioProgress = nil
+        textAudioErrorMessage = nil
+        isGeneratingTextAudio = false
+        isPreparingBackgroundMix = false
+        isPersistingBackgroundMix = false
+        clearRealtimeContext()
+        cleanupBackgroundPreviewCache()
+        engineController.prepareForLaunchCleanup()
+    }
+
+    /// 在应用退出时尽力停止实时链路、释放缓存、清空预览与端口状态。
+    func prepareForTermination() {
+        navigationResetTask?.cancel()
+        toastDismissTask?.cancel()
+        metricsTask?.cancel()
+        backgroundPreviewRefreshTask?.cancel()
+        textAudioProgressTask?.cancel()
+        dismissToast()
+        audioPlayer.stop()
+        audioPlayer.load(url: nil)
+        currentBackgroundPreviewURL = nil
+        backgroundAudioURL = nil
+        mixedOutputURL = nil
+        textAudioProgress = nil
+        textAudioErrorMessage = nil
+        isGeneratingTextAudio = false
+        isPreparingBackgroundMix = false
+        isPersistingBackgroundMix = false
+        clearRealtimeContext()
+        cleanupBackgroundPreviewCache()
+        engineController.prepareForTermination()
     }
 
     /// 刷新模型与索引目录，并在非自举阶段独立维护目录刷新等待态。
@@ -458,6 +637,24 @@ final class AppState: ObservableObject {
         let message = "Loaded file \(url.lastPathComponent). Ready for single convert."
         statusMessage = message
         presentToast(message: message, style: .success)
+    }
+
+    /// 返回当前仍可从 RES 里复用的 UVR vocal 结果，按历史时间倒序提供给输入选择面板。
+    var availableUVRVocalEntries: [TaskHistoryEntry] {
+        taskHistory.filter { entry in
+            entry.kind == .uvr && firstVocalURL(for: entry) != nil
+        }
+    }
+
+    /// 直接把某条 UVR vocal 结果挂到单文件输入，省去再去 Finder 手动找人声 stem。
+    func useUVRVocalInput(from entry: TaskHistoryEntry) {
+        guard let vocalURL = firstVocalURL(for: entry) else {
+            let message = "The selected UVR vocal file is no longer available on disk."
+            statusMessage = message
+            presentToast(message: message, style: .error)
+            return
+        }
+        setSingleInputFileURL(vocalURL)
     }
 
     /// 设置批处理输入目录，并清理互斥的显式文件队列与单文件输入。
@@ -655,15 +852,38 @@ final class AppState: ObservableObject {
     }
 
     /// 从后端重新拉取实时设备和运行状态。
-    func refreshRealtimeContext() async {
+    func refreshRealtimeContext(force: Bool = false) async {
         guard engineController.state == .ready else { return }
+        guard force || realtimeContextLoaded else { return }
         do {
             try await realtimeViewModel.refreshDevices()
             try await realtimeViewModel.refreshStatus()
+            realtimeContextLoaded = true
+            setActiveOperation(realtimeViewModel.operation)
         } catch {
             statusMessage = error.localizedDescription
             presentToast(message: error.localizedDescription, style: .error)
         }
+    }
+
+    /// 仅在用户显式操作 realtime 时再初始化对应链路，默认启动不主动触发。
+    func ensureRealtimeContextLoaded() async {
+        if realtimeContextLoaded {
+            await refreshRealtimeContext(force: true)
+            return
+        }
+        realtimeContextLoaded = true
+        await refreshRealtimeContext(force: true)
+        if !realtimeContextLoaded {
+            clearRealtimeContext()
+        }
+    }
+
+    /// 清空前端缓存的 realtime 状态，使默认启动只保留 single/text 可用链路。
+    func clearRealtimeContext() {
+        realtimeContextLoaded = false
+        realtimeViewModel.resetSessionState()
+        setActiveOperation(.idle)
     }
 
     /// 刷新 UVR 模型目录，供 UVR 面板下拉框使用。
@@ -679,22 +899,38 @@ final class AppState: ObservableObject {
 
     /// 使用当前模型和索引启动实时变声链路。
     func startRealtime() async {
+        await ensureRealtimeContextLoaded()
+        guard canToggleLive else {
+            let message = sharedActionBlockReason ?? "Live voice conversion is not available right now."
+            statusMessage = message
+            presentToast(message: message, style: .info)
+            return
+        }
+        beginLocalOperation(mode: .realtime, phase: .preparing, message: "Preparing live route.")
         await realtimeViewModel.start(
             selectedModelName: selectedModelName,
             selectedIndexPath: effectiveSelectedIndexPath,
             inferenceViewModel: inferenceViewModel
         )
-        await refreshRealtimeContext()
+        await refreshRealtimeContext(force: true)
+        if realtimeViewModel.lastError != nil, activeOperation == .idle {
+            failLocalOperation(mode: .realtime, message: "Live failed", lastFailure: realtimeViewModel.lastError ?? "Live voice conversion could not start.")
+        }
     }
 
     /// 停止实时变声链路，并刷新后端状态快照。
     func stopRealtime() async {
+        beginLocalOperation(mode: .realtime, phase: .stopping, message: "Stopping live route.")
         await realtimeViewModel.stop()
-        await refreshRealtimeContext()
+        await refreshRealtimeContext(force: true)
+        if realtimeViewModel.lastError != nil, activeOperation == .idle {
+            failLocalOperation(mode: .realtime, message: "Live failed", lastFailure: realtimeViewModel.lastError ?? "Live voice conversion could not stop.")
+        }
     }
 
     /// 将当前实时参数重新推送到运行中的实时链路。
     func applyRealtimeConfiguration() async {
+        guard realtimeContextLoaded || realtimeViewModel.isRunning else { return }
         await realtimeViewModel.configure(
             selectedModelName: selectedModelName,
             selectedIndexPath: effectiveSelectedIndexPath,
@@ -745,11 +981,13 @@ final class AppState: ObservableObject {
                 statusMessage = L10n.tr("status.model.loaded", name)
                 presentToast(message: statusMessage, style: .success)
             }
-            await realtimeViewModel.configure(
-                selectedModelName: selectedModelName,
-                selectedIndexPath: effectiveSelectedIndexPath,
-                inferenceViewModel: inferenceViewModel
-            )
+            if realtimeContextLoaded || realtimeViewModel.isRunning {
+                await realtimeViewModel.configure(
+                    selectedModelName: selectedModelName,
+                    selectedIndexPath: effectiveSelectedIndexPath,
+                    inferenceViewModel: inferenceViewModel
+                )
+            }
         } catch {
             statusMessage = error.localizedDescription
             presentToast(message: error.localizedDescription, style: .error)
@@ -758,6 +996,12 @@ final class AppState: ObservableObject {
 
     /// 卸载当前模型，并清空与模型相关的本地派生状态。
     func unloadModel() async {
+        guard canUnloadSelectedModel else {
+            let message = sharedActionBlockReason ?? "Model unload is blocked while a conversion task is active."
+            statusMessage = message
+            presentToast(message: message, style: .info)
+            return
+        }
         guard engineController.state == .ready else {
             statusMessage = L10n.tr("status.engine.refresh_first")
             presentToast(message: statusMessage, style: .info)
@@ -769,7 +1013,9 @@ final class AppState: ObservableObject {
             resetLoadedModelState(indexPaths: result.indexPaths, speakerCount: result.speakerCount)
             statusMessage = result.unloaded ? "Model unloaded." : "Model unload returned no-op."
             presentToast(message: statusMessage, style: .info)
-            await refreshRealtimeContext()
+            if realtimeContextLoaded {
+                await refreshRealtimeContext(force: true)
+            }
         } catch {
             statusMessage = error.localizedDescription
             presentToast(message: error.localizedDescription, style: .error)
@@ -778,6 +1024,12 @@ final class AppState: ObservableObject {
 
     /// 统一释放模型、实时与 UVR 占用的运行时缓存。
     func releaseRuntimeCaches() async {
+        guard canReleaseRuntimeMemory else {
+            let message = sharedActionBlockReason ?? "Runtime cache release is blocked while a conversion task is active."
+            statusMessage = message
+            presentToast(message: message, style: .info)
+            return
+        }
         guard engineController.state == .ready else {
             statusMessage = L10n.tr("status.engine.refresh_first")
             presentToast(message: statusMessage, style: .info)
@@ -791,7 +1043,11 @@ final class AppState: ObservableObject {
             uvrViewModel.outputMessage = ""
             statusMessage = result.message
             presentToast(message: result.message, style: .info)
-            await refreshRealtimeContext()
+            if realtimeContextLoaded {
+                await refreshRealtimeContext(force: true)
+            } else {
+                clearRealtimeContext()
+            }
         } catch {
             statusMessage = error.localizedDescription
             presentToast(message: error.localizedDescription, style: .error)
@@ -873,6 +1129,9 @@ final class AppState: ObservableObject {
 
     deinit {
         backgroundPreviewRefreshTask?.cancel()
+        textAudioProgressTask?.cancel()
+        navigationResetTask?.cancel()
+        toastDismissTask?.cancel()
         metricsTask?.cancel()
     }
 
@@ -891,6 +1150,12 @@ final class AppState: ObservableObject {
 
     /// 预留统一存储目录并执行单文件变声，确保输出不再落到 engine 目录中。
     func runSingleConvert() async {
+        guard canRunConvertAction else {
+            let message = sharedActionBlockReason ?? "Single convert is not available right now."
+            statusMessage = message
+            presentToast(message: message, style: .info)
+            return
+        }
         guard let inputFileURL = inferenceViewModel.inputFileURL else {
             await inferenceViewModel.convert(
                 selectedModelName: selectedModelName,
@@ -900,31 +1165,52 @@ final class AppState: ObservableObject {
         }
 
         do {
+            beginLocalOperation(mode: .single, phase: .running, message: "Single convert running.")
             let reservation = try managedOutputStorage.reserveSingleOutput(for: inputFileURL)
             pendingSingleReservation = reservation
+            defer { clearLocalOperation(ifMode: .single) }
             await inferenceViewModel.convert(
                 selectedModelName: selectedModelName,
                 outputDirectoryURL: reservation.primaryOutputDirectoryURL
             )
         } catch {
+            failLocalOperation(mode: .single, message: "Single convert failed.", lastFailure: error.localizedDescription)
             inferenceViewModel.errorMessage = error.localizedDescription
+            clearLocalOperation(ifMode: .single)
         }
     }
 
     /// 预留统一存储目录并执行批处理变声。
     func runBatchConvert() async {
+        guard canRunBatchAction else {
+            let message = sharedActionBlockReason ?? "Batch convert is not available right now."
+            statusMessage = message
+            presentToast(message: message, style: .info)
+            return
+        }
         do {
+            beginLocalOperation(mode: .batch, phase: .running, message: "Batch convert running.")
             let reservation = try managedOutputStorage.reserveBatchOutput()
             pendingBatchReservation = reservation
             batchViewModel.outputDirectoryURL = reservation.primaryOutputDirectoryURL
+            defer { clearLocalOperation(ifMode: .batch) }
             await batchViewModel.convert(selectedModelName: selectedModelName)
         } catch {
+            failLocalOperation(mode: .batch, message: "Batch convert failed.", lastFailure: error.localizedDescription)
             batchViewModel.errorMessage = error.localizedDescription
+            clearLocalOperation(ifMode: .batch)
         }
     }
 
     /// 使用后端 ChatTTS 先生成源语音，再套用当前模型做文本转音频。
     func runTextAudioGenerate() async {
+        guard canRunConvertAction else {
+            let message = sharedActionBlockReason ?? "Text audio generation is not available right now."
+            textAudioErrorMessage = message
+            statusMessage = message
+            presentToast(message: message, style: .info)
+            return
+        }
         let trimmedText = textAudioInput.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedText.isEmpty else {
             textAudioErrorMessage = "Enter some text before generating audio."
@@ -945,6 +1231,7 @@ final class AppState: ObservableObject {
             return
         }
         do {
+            beginLocalOperation(mode: .text, phase: .running, message: "Text audio generation is running.")
             let reservation = try managedOutputStorage.reserveTextAudioOutput(for: trimmedText)
             pendingTextAudioReservation = reservation
             textAudioErrorMessage = nil
@@ -969,6 +1256,7 @@ final class AppState: ObservableObject {
                 textAudioProgressTask = nil
                 isGeneratingTextAudio = false
                 textAudioRunStartedAt = nil
+                clearLocalOperation(ifMode: .text)
             }
             let normalizedBundle = effectiveTextAudioParameterBundle
 
@@ -1025,6 +1313,7 @@ final class AppState: ObservableObject {
             presentToast(message: statusMessage, style: .success)
             recordTextTaskHistory(status: .success, summary: summary, outputURL: outputURL, sourceURL: result.sourceAudioURL, snapshot: completionSnapshot)
         } catch {
+            failLocalOperation(mode: .text, message: "Text audio generation failed.", lastFailure: error.localizedDescription)
             textAudioErrorMessage = error.localizedDescription
             statusMessage = error.localizedDescription
             textAudioProgress = TextAudioProgressSnapshot(
@@ -1409,7 +1698,7 @@ final class AppState: ObservableObject {
                 timestamp: Date(),
                 kind: .realtime,
                 status: status,
-                title: realtimeViewModel.isRunning ? "Live monitor active" : "Live monitor update",
+                title: liveStatusLabel ?? (realtimeViewModel.isRunning ? "Live monitor active" : "Live monitor update"),
                 summary: summary,
                 modelName: selectedModelName,
                 inputLabel: inputLabel,
@@ -1531,7 +1820,27 @@ final class AppState: ObservableObject {
             .map(\.path)
             .filter { !$0.isEmpty }
             .forEach { paths.insert($0) }
+        inferredLegacyStoragePaths(for: entry)
+            .forEach { paths.insert($0) }
         return Array(paths)
+    }
+
+    /// 为缺少 artifacts/taskDirectory 的旧版 text 历史补推导出的伴随源文件路径，避免删除后仍残留 `-source.wav`。
+    private func inferredLegacyStoragePaths(for entry: TaskHistoryEntry) -> [String] {
+        guard entry.kind == .text else { return [] }
+        let hasExplicitSourceArtifact = entry.outputArtifacts.contains(where: { $0.role == .textSource })
+        guard !hasExplicitSourceArtifact else { return [] }
+        guard let outputPath = entry.outputPath, !outputPath.isEmpty else { return [] }
+
+        let outputURL = URL(fileURLWithPath: outputPath)
+        let inferredSourcePath = outputURL
+            .deletingLastPathComponent()
+            .appendingPathComponent(outputURL.deletingPathExtension().lastPathComponent + "-source")
+            .appendingPathExtension(outputURL.pathExtension)
+            .path
+
+        guard FileManager.default.fileExists(atPath: inferredSourcePath) else { return [] }
+        return [inferredSourcePath]
     }
 
     /// 优先取可播放音频，用于 RES 里的回放和主波形预览。
@@ -1706,6 +2015,14 @@ final class AppState: ObservableObject {
         return url
     }
 
+    /// 提取某条 UVR 历史记录的首个 vocal，用作单文件变声输入来源。
+    private func firstVocalURL(for entry: TaskHistoryEntry) -> URL? {
+        guard let artifact = entry.outputArtifacts.first(where: { $0.role == .uvrVocal }) else { return nil }
+        let url = URL(fileURLWithPath: artifact.path)
+        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+        return url
+    }
+
     /// 将一键合并后的背景混音产物挂回原始单文件任务，方便在 RES 中回顾完整链路。
     private func attachMixedOutputArtifact(_ mixedURL: URL, foregroundURL: URL) {
         guard let index = taskHistory.firstIndex(where: { entry in
@@ -1813,8 +2130,19 @@ final class AppState: ObservableObject {
 
     /// 将所有活跃等待态压缩成当前界面真正应该展示的那一个。
     private func synchronizeBusyDescriptor() {
-        activeBusyDescriptor = busyDescriptors.values.max { lhs, rhs in
+        let explicitBusyDescriptor = busyDescriptors.values.max { lhs, rhs in
             lhs.priority < rhs.priority
+        }
+        if let explicitBusyDescriptor {
+            activeBusyDescriptor = explicitBusyDescriptor
+        } else if activeOperation.blocking {
+            activeBusyDescriptor = BusyDescriptor(
+                scope: .catalogRefresh,
+                message: activeOperation.message,
+                priority: 0
+            )
+        } else {
+            activeBusyDescriptor = nil
         }
         isBootstrapping = busyDescriptors[.bootstrap] != nil
     }
@@ -1838,4 +2166,11 @@ final class AppState: ObservableObject {
         }
         return rawName.replacingOccurrences(of: ".pth", with: "")
     }
+
+#if DEBUG
+    /// 允许测试在不触发真实后端请求的情况下标记 realtime 已加载。
+    func setRealtimeContextLoadedForTesting(_ loaded: Bool = true) {
+        realtimeContextLoaded = loaded
+    }
+#endif
 }
