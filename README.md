@@ -14,7 +14,7 @@ MACR0VC is a macOS-first RVC workstation that combines a Swift desktop client wi
   <img src="https://img.shields.io/badge/FastAPI-Integrated-009688?style=flat-square&logo=fastapi&logoColor=white" alt="FastAPI Integrated" />
 </p>
 
-![MACR0VC showcase](./dist/pic/展示图.png)
+![MACR0VC showcase](./docs/assets/readme/showcase.png)
 
 ---
 
@@ -77,31 +77,31 @@ The app is designed around real production-facing flows rather than isolated dem
 
 The main workspace brings patch selection, realtime controls, offline conversion controls, playback, and runtime indicators into one screen.
 
-![MACR0VC main workspace](./dist/pic/主界面.png)
+![MACR0VC main workspace](./docs/assets/readme/main-workspace.png)
 
 ### Input Center
 
 The input panel supports direct audio loading as well as text-driven speech generation into the current target voice.
 
-![MACR0VC input center](./dist/pic/输入界面.png)
+![MACR0VC input center](./docs/assets/readme/input-center.png)
 
 ### Completed Conversion View
 
 Completed conversion results remain immediately playable, reviewable, and merge-ready from the main workspace.
 
-![MACR0VC completed conversion](./dist/pic/转换完成界面.png)
+![MACR0VC completed conversion](./docs/assets/readme/completed-conversion.png)
 
 ### RES Archive
 
 The archive keeps historical outputs, source links, model context, and cleanup actions in one place.
 
-![MACR0VC result archive](./dist/pic/历史结果界面.png)
+![MACR0VC result archive](./docs/assets/readme/res-archive.png)
 
 ### TASK Queue
 
 The task queue surfaces the active job, run progress, current input, and recent status transitions.
 
-![MACR0VC task queue](./dist/pic/task界面.png)
+![MACR0VC task queue](./docs/assets/readme/task-queue.png)
 
 ## Quick Start
 
