@@ -113,27 +113,64 @@ MACR0VC 面向的是需要在一台 macOS 设备上完成完整 RVC 工作流的
 - macOS 14 或更高版本
 - 与 `swift-tools-version: 6.2` 兼容的 Swift 工具链
 - `engine/` 对应的本地 Python 环境
+- 至少准备一个可用于推理的 RVC `.pth` 音色模型
 
 ### 1. 克隆仓库
 
 ```bash
 git clone git@github.com:boogieLing/MACR0VC.git
 cd MACR0VC
+git submodule update --init --recursive
 ```
 
-### 2. 查看当前命令入口
+`engine/` 是以 submodule 形式接入的。如果跳过这一步，本地可能没有完整的后端代码、内置资源和示例模型快照。
+
+### 2. 准备模型与基础推理资源
+
+如果没有模型文件和基础推理资源，MACR0VC 即使能启动也无法真正执行变声。
+
+模型默认位置：
+
+- `engine/assets/weights/`
+  至少应包含一个 `.pth` 音色模型
+- `engine/assets/indices/`
+  可放与模型对应的 `.index` 文件
+
+基础推理资源：
+
+- `engine/assets/hubert/hubert_base.pt`
+- `engine/assets/rmvpe/rmvpe.pt`
+- `engine/assets/rmvpe/rmvpe.onnx`
+
+当前仓库快照里可能已经带有示例模型和索引；如果你的本地副本没有这些文件，就需要先补上自己的 `.pth` 和可选 `.index`，否则单文件、批量、实时和文本生成目标音色都无法正常工作。
+
+模型识别规则：
+
+- 如果后端看不到有效的 `.pth` 文件，`VOICE MODEL` 会一直停留在 `Choose target voice`
+- `.index` 不是强制项，但很多音色会因为索引而更稳定、更像目标角色
+- 客户端会优先尝试按文件名自动匹配与模型相近的 `.index`
+- `SPEAKER ID` 只对多说话人模型有意义，单说话人模型通常保持 `0`
+
+应用启动后，建议使用：
+
+- `ASSET`
+  查看资源完整性，并在基础资源缺失时触发内置下载补齐
+- `SYNC`
+  在你新增或替换 `.pth` / `.index` 后刷新模型目录
+
+### 3. 查看当前命令入口
 
 ```bash
 make help
 ```
 
-### 3. 跑共享开发校验
+### 4. 跑共享开发校验
 
 ```bash
 make dev-check
 ```
 
-### 4. 打包应用
+### 5. 打包应用
 
 ```bash
 make package
@@ -145,14 +182,30 @@ make package
 dist/SwiftRVCMacClient.app
 ```
 
-### 5. 查看应用摘要或直接启动
+### 6. 查看应用摘要或直接启动
 
 ```bash
 make app-info
 make run-app
 ```
 
-### 6. 交付前运行本地 release gate
+### 7. 确认应用已经具备可转换状态
+
+第一次启动时，最小可用流程建议按这个顺序确认：
+
+1. 点击 `BOOT` 启动后端
+2. 打开 `ASSET`，确认基础推理资源已经就绪
+3. 点击 `SYNC`，刷新模型列表
+4. 在音色补丁区选择一个目标模型
+
+如果界面里没有出现任何模型，按这个顺序排查：
+
+1. 确认已经执行过 `git submodule update --init --recursive`
+2. 检查 `engine/assets/weights/` 中是否真的有 `.pth`
+3. 新增文件后再次点击 `SYNC`
+4. 如果依然报基础资源缺失，再打开 `ASSET` 排查
+
+### 8. 交付前运行本地 release gate
 
 ```bash
 make release-check

@@ -110,27 +110,62 @@ The task queue surfaces the active job, run progress, current input, and recent 
 - macOS 14 or later
 - Swift toolchain compatible with `swift-tools-version: 6.2`
 - A local Python environment for the integrated backend under `engine/`
+- At least one RVC voice model checkpoint available for inference
 
 ### 1. Clone the repository
 
 ```bash
 git clone git@github.com:boogieLing/MACR0VC.git
 cd MACR0VC
+git submodule update --init --recursive
 ```
 
-### 2. Inspect the available command surface
+`engine/` is tracked as a submodule. If you skip submodule initialization, the backend code, bundled assets, and any sample model snapshot inside the engine repository may be missing locally.
+
+### 2. Prepare models and inference assets
+
+MACR0VC will not be usable until both the voice model files and the base inference assets are available.
+
+Required model locations:
+
+- `engine/assets/weights/`
+  should contain at least one `.pth` voice model checkpoint
+- `engine/assets/indices/`
+  can contain matching `.index` files for the selected voice model
+
+Required base inference assets:
+
+- `engine/assets/hubert/hubert_base.pt`
+- `engine/assets/rmvpe/rmvpe.pt`
+- `engine/assets/rmvpe/rmvpe.onnx`
+
+Current repository snapshots may already include sample weights and indices. If your local clone does not include them, add your own `.pth` and optional `.index` files before expecting single, batch, realtime, or text-driven conversion to work.
+
+Model selection rules:
+
+- `VOICE MODEL` will stay on `Choose target voice` until at least one valid `.pth` file is visible to the backend
+- `.index` files are optional, but they improve similarity for many voices
+- the client tries to auto-match an index whose filename resembles the selected model name
+- `SPEAKER ID` matters only for multi-speaker models; single-speaker models should stay on `0`
+
+After the app is running, use:
+
+- `ASSET` to review integrity and trigger the built-in asset downloader when base assets are missing
+- `SYNC` to refresh the model catalog after adding or changing `.pth` / `.index` files
+
+### 3. Inspect the available command surface
 
 ```bash
 make help
 ```
 
-### 3. Run the shared development gate
+### 4. Run the shared development gate
 
 ```bash
 make dev-check
 ```
 
-### 4. Build the packaged app
+### 5. Build the packaged app
 
 ```bash
 make package
@@ -142,14 +177,30 @@ Expected artifact:
 dist/SwiftRVCMacClient.app
 ```
 
-### 5. Inspect or launch the packaged app
+### 6. Inspect or launch the packaged app
 
 ```bash
 make app-info
 make run-app
 ```
 
-### 6. Run the local release gate when preparing a handoff
+### 7. Verify the app is ready to convert
+
+On first launch, the minimum ready sequence is:
+
+1. `BOOT` the backend
+2. open `ASSET` and confirm the base inference assets are available
+3. press `SYNC` so the app refreshes the available model list
+4. select a voice model from the patch area
+
+If no model appears in the app:
+
+1. confirm `git submodule update --init --recursive` has been run
+2. check that `engine/assets/weights/` contains at least one `.pth`
+3. press `SYNC` again after adding files
+4. open `ASSET` if the app still reports missing base resources
+
+### 8. Run the local release gate when preparing a handoff
 
 ```bash
 make release-check
