@@ -18,6 +18,8 @@ ICON_BASE_SIZE=1024
 ICON_INSET_SIZE=860
 ICON_CORNER_RADIUS=180
 
+eval "$("${ROOT_DIR}/scripts/bump-backend-api-version.py")"
+
 mkdir -p "${DIST_DIR}"
 
 pushd "${CLIENT_DIR}" >/dev/null
@@ -69,7 +71,7 @@ if [[ -f "${ICON_SOURCE_PATH}" ]]; then
   rm -rf "${ICONSET_ROOT}"
 fi
 
-cat > "${CONTENTS_DIR}/Info.plist" <<'PLIST'
+cat > "${CONTENTS_DIR}/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -89,9 +91,9 @@ cat > "${CONTENTS_DIR}/Info.plist" <<'PLIST'
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>0.1.0</string>
+    <string>${APP_SHORT_VERSION}</string>
     <key>CFBundleVersion</key>
-    <string>1</string>
+    <string>${APP_BUILD_VERSION}</string>
     <key>LSApplicationCategoryType</key>
     <string>public.app-category.music</string>
     <key>LSMinimumSystemVersion</key>
